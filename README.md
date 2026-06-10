@@ -101,6 +101,26 @@ flow replaces the current process with `tmux attach`/`switch-client`, so it
 takes over the current tab in any terminal. The only terminal-specific action is
 `-w` (open a brand-new window), which runs the configurable `terminal` command.
 
+## Development
+
+Dogfood it while you build it — install to a directory on your `PATH` and rebuild
+as you go:
+
+```sh
+make install        # builds with version=git-describe -> ~/.local/bin/grove
+# (override the dir: make install BINDIR=~/bin)
+```
+
+`grove` embeds itself as the left switcher pane (via the running binary's path),
+so a rebuild is picked up by **new** windows automatically. To refresh the
+switcher pane in already-open windows, restart the session:
+
+```sh
+tmux kill-server    # then run `grove` again
+```
+
+`make test` / `make vet` / `make fmt` for the usual checks.
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
