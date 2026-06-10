@@ -1,0 +1,23 @@
+# grove repo-local config (.grove.toml).
+# panes: one command per pane (empty string = plain shell).
+
+# Command to open a NEW terminal window (only used by 'grove open <name> -w').
+# {cmd} is replaced with the attach command. Examples:
+#   "ghostty -e {cmd}"  "wezterm start -- {cmd}"  "kitty {cmd}"  "alacritty -e {cmd}"
+terminal = ""
+
+# [[repo]] = auto-discover one workspace per git worktree.
+[[repo]]
+# path        = ""                          # defaults to this repo (this file's dir)
+prefix        = ""                          # optional name prefix
+panes         = ["claude", "", "lazygit"]   # first = big middle pane; rest = right column
+# New-worktree settings (used by the "n" action in the grove pane):
+worktree_root = ""                          # REQUIRED for "n": dir for new worktrees, e.g. "~/code/myrepo-worktrees"
+base          = "origin/main"               # new branch start-point (fetched first)
+setup         = ""                          # e.g. "./scripts/bootstrap.sh" — run in the shell pane after create
+
+# [[workspace]] = a manual one-off entry.
+# [[workspace]]
+# name   = "notes"
+# dir    = "~/notes"
+# panes  = [""]

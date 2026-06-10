@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -83,10 +84,43 @@ func findLocalConfig() string {
 	}
 }
 
+// mainWorktreeConfig returns the .grove.toml of the repository's MAIN worktree,
+// or "". This lets linked worktrees (which each have their own .git file and no
+// committed config) share the config that lives in the main worktree — e.g. the
+// switcher pane that grove runs inside every worktree window.
+func mainWorktreeConfig() string {
+	out, err := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		// Older git without --path-format: fall back and resolve manually.
+		out, err = exec.Command("git", "rev-parse", "--git-common-dir").Output()
+		if err != nil {
+			return ""
+		}
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if commonDir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(commonDir) {
+		if cwd, e := os.Getwd(); e == nil {
+			commonDir = filepath.Join(cwd, commonDir)
+		}
+	}
+	// commonDir is the shared ".../<mainRoot>/.git"; its parent is the main root.
+	p := filepath.Join(filepath.Dir(commonDir), localConfigName)
+	if fileExists(p) {
+		return p
+	}
+	return ""
+}
+
 // resolveConfigPath returns the config to load: a repo-local .grove.toml when one
-// is found (local wins), otherwise the global path.
+// is found (local wins), then the main worktree's config, otherwise global.
 func resolveConfigPath() (path string, isLocal bool) {
 	if p := findLocalConfig(); p != "" {
+		return p, true
+	}
+	if p := mainWorktreeConfig(); p != "" {
 		return p, true
 	}
 	return configPath(), false
