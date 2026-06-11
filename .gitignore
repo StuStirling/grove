@@ -3,3 +3,6 @@
 *.test
 *.out
 .DS_Store
+
+# Claude Code: personal/local overrides (may hold secrets) — never commit
+.claude/settings.local.json
