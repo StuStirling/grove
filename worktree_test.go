@@ -50,6 +50,21 @@ func TestSanitizeName(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFor(t *testing.T) {
+	// Discovered worktrees carry the owning repo path (used by remove); the
+	// prefix is folded into the name.
+	ws := workspaceFor(Repo{Path: "/repo", Prefix: "android"}, "/repo/wt/feature", "f/x")
+	if ws.Name != "android/feature" {
+		t.Errorf("name = %q, want android/feature", ws.Name)
+	}
+	if ws.RepoPath != "/repo" {
+		t.Errorf("RepoPath = %q, want /repo", ws.RepoPath)
+	}
+	if ws.Dir != "/repo/wt/feature" || ws.Branch != "f/x" {
+		t.Errorf("dir/branch: %+v", ws)
+	}
+}
+
 func TestDefaultBase(t *testing.T) {
 	if got := defaultBase(Repo{Base: "origin/main"}); got != "origin/main" {
 		t.Errorf("explicit base: %q", got)

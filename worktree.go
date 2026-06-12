@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -119,7 +120,11 @@ func workspaceFor(r Repo, path, branch string) Workspace {
 	if r.Prefix != "" {
 		name = sanitizeName(r.Prefix) + "/" + name
 	}
-	return Workspace{Name: name, Dir: path, Panes: r.Panes, Branch: branch}
+	repoName := strings.TrimSpace(r.Prefix)
+	if repoName == "" {
+		repoName = filepath.Base(expandPath(r.Path))
+	}
+	return Workspace{Name: name, Dir: path, Panes: r.Panes, Branch: branch, RepoPath: expandPath(r.Path), RepoName: repoName}
 }
 
 // createWorktree creates a new git worktree at <worktree_root>/<intention> on a
@@ -171,6 +176,62 @@ func createWorktree(r Repo, intention, branch, base string) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return workspaceFor(r, path, branch), nil
+}
+
+// errWorktreeDirty signals that a plain `git worktree remove` was refused because
+// the worktree has genuine uncommitted changes (not just submodules), so the
+// caller must opt into a forced removal.
+var errWorktreeDirty = errors.New("worktree has uncommitted changes")
+
+// worktreeDirty reports real changes in the worktree, ignoring submodules. The
+// submodule working dirs are exactly what make a plain `git worktree remove` fail
+// in the first place, so we discount them when deciding whether forcing is safe.
+func worktreeDirty(dir string) bool {
+	out, err := exec.Command("git", "-C", dir,
+		"status", "--porcelain", "--ignore-submodules=all").Output()
+	if err != nil {
+		return true // can't tell → treat as dirty, stay safe
+	}
+	return strings.TrimSpace(string(out)) != ""
+}
+
+// removeWorktree removes the linked worktree at dir, running git from repoPath
+// (which must not be dir). It tries a plain remove first; if git refuses, it only
+// retries with --force when the worktree is clean ignoring submodules, otherwise
+// it returns errWorktreeDirty so the caller can ask for explicit confirmation.
+func removeWorktree(repoPath, dir string, force bool) error {
+	if _, err := exec.Command("git", "-C", repoPath,
+		"worktree", "remove", dir).CombinedOutput(); err == nil {
+		return nil
+	}
+	if !force && worktreeDirty(dir) {
+		return errWorktreeDirty
+	}
+	if out, err := exec.Command("git", "-C", repoPath,
+		"worktree", "remove", "--force", dir).CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree remove --force: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// errBranchUnmerged signals that `git branch -d` was refused because the branch
+// is not fully merged, so it was kept rather than force-deleted.
+var errBranchUnmerged = errors.New("branch not fully merged")
+
+// removeBranch safely deletes a local branch with -d (refuses unmerged branches).
+// An unmerged branch is reported as errBranchUnmerged; an empty name is a no-op.
+func removeBranch(repoPath, branch string) error {
+	if strings.TrimSpace(branch) == "" {
+		return nil
+	}
+	out, err := exec.Command("git", "-C", repoPath, "branch", "-d", branch).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "not fully merged") {
+			return errBranchUnmerged
+		}
+		return fmt.Errorf("git branch -d %s: %v: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // expandRepo turns a [[repo]] entry into one workspace per worktree.

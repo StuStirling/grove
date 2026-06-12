@@ -12,10 +12,12 @@ import (
 
 // Workspace is one selectable entry in the switcher.
 type Workspace struct {
-	Name   string   `toml:"name"`
-	Dir    string   `toml:"dir"`
-	Panes  []string `toml:"panes"` // one command per pane; empty entry = bare shell
-	Branch string   `toml:"-"`     // display-only, set for discovered worktrees
+	Name     string   `toml:"name"`
+	Dir      string   `toml:"dir"`
+	Panes    []string `toml:"panes"` // one command per pane; empty entry = bare shell
+	Branch   string   `toml:"-"`     // display-only, set for discovered worktrees
+	RepoPath string   `toml:"-"`     // owning repo path, set for discovered worktrees; "" for manual entries
+	RepoName string   `toml:"-"`     // display repo name (prefix, else repo dir basename); drives the terminal title
 }
 
 // Repo discovers one workspace per git worktree of the repo at Path.

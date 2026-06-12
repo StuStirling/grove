@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -38,12 +39,17 @@ type model struct {
 	chosen     *Workspace // launcher mode: workspace picked to attach after quit
 	width      int        // pane width, for truncating long branch names
 
-	mode         int
-	intention    textinput.Model
-	branch       textinput.Model
-	base         textinput.Model
-	formField    int  // 0 = intention, 1 = branch, 2 = base
-	confirmClose bool // awaiting y/n to close the selected window
+	mode      int
+	intention textinput.Model
+	branch    textinput.Model
+	base      textinput.Model
+	formField int // 0 = intention, 1 = branch, 2 = base
+
+	// confirm holds the pending y/n confirmation, "" when none. Stages:
+	// "close", "delete", "forceDelete", "branch". pendingWS is the target,
+	// captured at key-press so a list reload can't shift it.
+	confirm   string
+	pendingWS Workspace
 }
 
 const numFormFields = 3
@@ -107,21 +113,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Resolve a pending close confirmation first.
-	if m.confirmClose {
-		m.confirmClose = false
-		if msg.String() == "y" {
-			ws := m.workspaces[m.cursor]
-			if err := closeWindow(ws.Name); err != nil {
-				m.msg = err.Error()
-			} else {
-				m.msg = "closed " + ws.Name
-			}
-			m.refresh()
-		} else {
-			m.msg = "cancelled"
-		}
-		return m, nil
+	// Resolve a pending confirmation first.
+	if m.confirm != "" {
+		return m.resolveConfirm(msg)
 	}
 
 	switch msg.String() {
@@ -147,8 +141,26 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.msg = ws.Name + " is not open"
 			return m, nil
 		}
-		m.confirmClose = true
+		m.pendingWS = ws
+		m.confirm = "close"
 		m.msg = "close " + ws.Name + "? (y/n)"
+		return m, nil
+	case "d":
+		if len(m.workspaces) == 0 {
+			return m, nil
+		}
+		ws := m.workspaces[m.cursor]
+		if ws.RepoPath == "" {
+			m.msg = ws.Name + " is not a git worktree"
+			return m, nil
+		}
+		if m.embedded && statusOf(ws.Name) == "active" {
+			m.msg = "cannot delete the active workspace"
+			return m, nil
+		}
+		m.pendingWS = ws
+		m.confirm = "delete"
+		m.msg = "delete " + ws.Name + "? (y/n)"
 		return m, nil
 	case "n":
 		if len(m.cfg.Repo) == 0 {
@@ -181,6 +193,103 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.chosen = &ws
 		return m, tea.Quit
 	}
+	return m, nil
+}
+
+// resolveConfirm handles the answer to a pending y/n confirmation, driving the
+// close and (multi-step) delete flows.
+func (m model) resolveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	yes := msg.String() == "y"
+	stage := m.confirm
+	m.confirm = ""
+	ws := m.pendingWS
+
+	switch stage {
+	case "close":
+		if !yes {
+			m.msg = "cancelled"
+			return m, nil
+		}
+		if err := closeWindow(ws.Name); err != nil {
+			m.msg = err.Error()
+		} else {
+			m.msg = "closed " + ws.Name
+		}
+		m.refresh()
+		return m, nil
+
+	case "delete":
+		if !yes {
+			m.msg = "cancelled"
+			return m, nil
+		}
+		err := removeWorktree(ws.RepoPath, ws.Dir, false)
+		if errors.Is(err, errWorktreeDirty) {
+			m.pendingWS = ws
+			m.confirm = "forceDelete"
+			m.msg = ws.Name + " has uncommitted changes, force delete? (y/n)"
+			return m, nil
+		}
+		if err != nil {
+			m.msg = err.Error()
+			return m, nil
+		}
+		return m.afterRemove(ws)
+
+	case "forceDelete":
+		if !yes {
+			m.msg = "cancelled"
+			return m, nil
+		}
+		if err := removeWorktree(ws.RepoPath, ws.Dir, true); err != nil {
+			m.msg = err.Error()
+			return m, nil
+		}
+		return m.afterRemove(ws)
+
+	case "branch":
+		if !yes {
+			return m.finishRemove("removed " + ws.Name)
+		}
+		switch err := removeBranch(ws.RepoPath, ws.Branch); {
+		case errors.Is(err, errBranchUnmerged):
+			return m.finishRemove("removed " + ws.Name + ", branch " + ws.Branch + " unmerged, kept")
+		case err != nil:
+			return m.finishRemove(err.Error())
+		default:
+			return m.finishRemove("removed " + ws.Name + " and branch " + ws.Branch)
+		}
+	}
+	return m, nil
+}
+
+// afterRemove kills the worktree's tmux window (if any), then either offers to
+// delete its branch or finishes the removal.
+func (m model) afterRemove(ws Workspace) (tea.Model, tea.Cmd) {
+	if statusOf(ws.Name) != "" {
+		_ = closeWindow(ws.Name)
+	}
+	if ws.Branch != "" {
+		m.pendingWS = ws
+		m.confirm = "branch"
+		m.msg = "removed " + ws.Name + " — also delete branch " + ws.Branch + "? (y/n)"
+		return m, nil
+	}
+	return m.finishRemove("removed " + ws.Name)
+}
+
+// finishRemove reloads the workspace list after a deletion, keeps the cursor in
+// range, and shows the final message.
+func (m model) finishRemove(msg string) (tea.Model, tea.Cmd) {
+	m.workspaces = m.cfg.resolve()
+	if m.cursor >= len(m.workspaces) {
+		m.cursor = len(m.workspaces) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	m.refresh()
+	m.msg = msg
 	return m, nil
 }
 
@@ -282,9 +391,10 @@ func (m model) listView() string {
 	if m.msg != "" {
 		b.WriteString(dimStyle.PaddingLeft(1).Render(truncate(m.msg, m.width-2)) + "\n")
 	}
-	// Two short lines to fit the slim pane.
-	b.WriteString(helpStyle.Render("⏎ open  n new  x close") + "\n")
-	b.WriteString(helpStyle.Render("↑↓ move  r reload  q quit") + "\n")
+	// Short lines to fit the slim pane.
+	b.WriteString(helpStyle.Render("⏎ open  n new  d del") + "\n")
+	b.WriteString(helpStyle.Render("x close  r reload  q quit") + "\n")
+	b.WriteString(helpStyle.Render("↑↓ move") + "\n")
 	b.WriteString(helpStyle.Render(legend()))
 	return b.String()
 }

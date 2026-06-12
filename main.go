@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -17,6 +18,7 @@ usage:
   grove open <name>            attach a workspace in the current tab
   grove open <name> -w         open the workspace in a new terminal window
   grove new <intention> <br>   create a worktree (branch <br>) and open it
+  grove remove <name>          remove a worktree (--force if dirty, --branch to delete its branch)
   grove init                   write a .grove.toml template in the current repo
   grove list                   print workspace names
   grove doctor                 check prerequisites (tmux, git)
@@ -69,6 +71,8 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("created %s at %s (branch %s)\n", ws.Name, ws.Dir, ws.Branch)
+	case "remove":
+		removeCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "grove: unknown command %q\n\n%s", args[0], usage)
 		os.Exit(2)
@@ -91,14 +95,7 @@ func openCmd(args []string) {
 		os.Exit(2)
 	}
 	cfg := mustConfig()
-	var found *Workspace
-	for _, ws := range cfg.resolve() {
-		if ws.Name == name {
-			w := ws
-			found = &w
-			break
-		}
-	}
+	found := findWorkspace(cfg, name)
 	if found == nil {
 		fmt.Fprintf(os.Stderr, "grove: no workspace named %q\n", name)
 		os.Exit(1)
@@ -114,6 +111,74 @@ func openCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "grove: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// findWorkspace returns the resolved workspace with the given name, or nil.
+func findWorkspace(cfg *Config, name string) *Workspace {
+	for _, ws := range cfg.resolve() {
+		if ws.Name == name {
+			w := ws
+			return &w
+		}
+	}
+	return nil
+}
+
+// removeCmd implements `grove remove <name> [--force] [--branch]`: it removes the
+// worktree (forcing past genuine uncommitted changes only with --force) and,
+// with --branch, safely deletes its branch.
+func removeCmd(args []string) {
+	force, delBranch := false, false
+	var name string
+	for _, a := range args {
+		switch a {
+		case "--force", "-f":
+			force = true
+		case "--branch", "-b":
+			delBranch = true
+		default:
+			name = a
+		}
+	}
+	if name == "" {
+		fmt.Fprintln(os.Stderr, "grove remove: needs a workspace name")
+		os.Exit(2)
+	}
+	found := findWorkspace(mustConfig(), name)
+	if found == nil {
+		fmt.Fprintf(os.Stderr, "grove: no workspace named %q\n", name)
+		os.Exit(1)
+	}
+	if found.RepoPath == "" {
+		fmt.Fprintf(os.Stderr, "grove: %s is not a git worktree\n", name)
+		os.Exit(1)
+	}
+
+	switch err := removeWorktree(found.RepoPath, found.Dir, force); {
+	case errors.Is(err, errWorktreeDirty):
+		fmt.Fprintf(os.Stderr, "grove: %s has uncommitted changes; re-run with --force\n", name)
+		os.Exit(1)
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "grove: %v\n", err)
+		os.Exit(1)
+	}
+	// Tidy up the tmux window if one is open; absence is fine.
+	_ = closeWindow(found.Name)
+
+	if delBranch {
+		switch err := removeBranch(found.RepoPath, found.Branch); {
+		case errors.Is(err, errBranchUnmerged):
+			fmt.Printf("removed %s; branch %s kept (unmerged)\n", name, found.Branch)
+			return
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "grove: removed %s but %v\n", name, err)
+			os.Exit(1)
+		default:
+			fmt.Printf("removed %s and branch %s\n", name, found.Branch)
+			return
+		}
+	}
+	fmt.Printf("removed %s\n", name)
 }
 
 func runTUI() {

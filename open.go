@@ -126,6 +126,12 @@ func buildLayout(ws Workspace, firstPane string) error {
 	pin := fmt.Sprintf("resize-pane -t %s -x %d", firstPane, switcherWidth)
 	_ = tmux(strings.Fields(pin)...)
 	_ = tmux("set-hook", "-w", "-t", sessionName+":"+ws.Name, "window-resized", pin)
+	// Stamp the repo name on the window so set-titles-string can show it.
+	repo := ws.RepoName
+	if strings.TrimSpace(repo) == "" {
+		repo = ws.Name
+	}
+	_ = tmux("set-option", "-w", "-t", sessionName+":"+ws.Name, "@grove_repo", repo)
 	// Land the cursor on the big (work) pane.
 	_ = tmux("select-pane", "-t", big)
 	return nil
@@ -134,12 +140,20 @@ func buildLayout(ws Workspace, firstPane string) error {
 // ensureWindow makes sure a tab for this workspace exists, creating the session
 // and/or window (with its pane layout) as needed.
 func configureSession() {
-	// Keep the terminal's own title; don't let tmux rewrite it.
-	_ = tmux("set-option", "-t", sessionName, "set-titles", "off")
+	// Drive the terminal's title from the active worktree's repo, so the grove
+	// window is findable among other terminals. @grove_repo is set per window in
+	// buildLayout; the format resolves against whichever window is active.
+	_ = tmux("set-option", "-t", sessionName, "set-titles", "on")
+	_ = tmux("set-option", "-t", sessionName, "set-titles-string", "grove - #{@grove_repo}")
 	// Show a tab strip even with one window.
 	_ = tmux("set-option", "-t", sessionName, "status", "on")
 	// Click to select panes/tabs and scroll (escape full-screen TUIs).
 	_ = tmux("set-option", "-t", sessionName, "mouse", "on")
+	// Make the selected pane obvious: bright active border vs dim inactive,
+	// plus heavy box lines on the active pane for a shape cue too.
+	_ = tmux("set-option", "-t", sessionName, "pane-border-style", "fg=colour238")
+	_ = tmux("set-option", "-t", sessionName, "pane-active-border-style", "fg=colour40,bold")
+	_ = tmux("set-option", "-t", sessionName, "pane-border-lines", "heavy")
 }
 
 // groveBin returns the path to the grove executable, run as the left switcher
