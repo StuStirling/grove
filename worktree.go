@@ -178,6 +178,61 @@ func createWorktree(r Repo, intention, branch, base string) (Workspace, error) {
 	return workspaceFor(r, path, branch), nil
 }
 
+// checkoutWorktree creates a worktree at <worktree_root>/<intention> checked out
+// on an existing branch. branch may be a local name ("feature-x") or a
+// remote-tracking ref ("origin/feature-x"); for a remote-only branch it fetches
+// and creates a local branch tracking the remote. Returns the new Workspace.
+func checkoutWorktree(r Repo, branch, intention string) (Workspace, error) {
+	branch = strings.TrimSpace(branch)
+	intention = strings.TrimSpace(intention)
+	switch {
+	case branch == "":
+		return Workspace{}, fmt.Errorf("branch is required")
+	case intention == "":
+		return Workspace{}, fmt.Errorf("intention (worktree name) is required")
+	case strings.ContainsAny(intention, "/\\"):
+		return Workspace{}, fmt.Errorf("intention must not contain a path separator")
+	}
+
+	repoPath := expandPath(r.Path)
+	root := expandPath(r.WorktreeRoot)
+	if root == "" {
+		return Workspace{}, fmt.Errorf("worktree_root is not set for repo %s", r.Path)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return Workspace{}, fmt.Errorf("creating worktree root: %w", err)
+	}
+	path := filepath.Join(root, intention)
+	if _, err := os.Stat(path); err == nil {
+		return Workspace{}, fmt.Errorf("path already exists: %s", path)
+	}
+
+	// Resolve which branch to check out. A remote-tracking ref (<remote>/<ref>
+	// where <remote> is a configured remote) with no matching local branch is
+	// fetched and checked out as a new local tracking branch; otherwise we check
+	// out the existing local branch directly. Local names also contain "/", so we
+	// must not treat those as remotes.
+	local := branch
+	addArgs := []string{"worktree", "add", path, branch}
+	if remote, ref, ok := strings.Cut(branch, "/"); ok && isRemote(repoPath, remote) {
+		local = ref
+		if branchExists(repoPath, local) {
+			addArgs = []string{"worktree", "add", path, local}
+		} else {
+			if out, err := exec.Command("git", "-C", repoPath, "fetch", remote, ref).CombinedOutput(); err != nil {
+				return Workspace{}, fmt.Errorf("git fetch %s %s: %v: %s", remote, ref, err, strings.TrimSpace(string(out)))
+			}
+			addArgs = []string{"worktree", "add", "--track", "-b", local, path, branch}
+		}
+	}
+
+	args := append([]string{"-C", repoPath}, addArgs...)
+	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		return Workspace{}, fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return workspaceFor(r, path, local), nil
+}
+
 // errWorktreeDirty signals that a plain `git worktree remove` was refused because
 // the worktree has genuine uncommitted changes (not just submodules), so the
 // caller must opt into a forced removal.

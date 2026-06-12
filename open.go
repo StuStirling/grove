@@ -267,13 +267,29 @@ func runSetup(ws Workspace, setup string) error {
 	return tmux("send-keys", "-t", target, setup, "Enter")
 }
 
-// createAndOpen creates a new worktree, builds + selects its window, then runs
-// the repo's setup command in the shell pane.
+// createAndOpen creates a new worktree on a new branch, builds + selects its
+// window, then runs the repo's setup command in the shell pane.
 func createAndOpen(r Repo, intention, branch, base string) (Workspace, error) {
 	ws, err := createWorktree(r, intention, branch, base)
 	if err != nil {
 		return ws, err
 	}
+	return openCreated(ws, r)
+}
+
+// checkoutAndOpen creates a worktree on an existing branch, builds + selects its
+// window, then runs the repo's setup command in the shell pane.
+func checkoutAndOpen(r Repo, branch, intention string) (Workspace, error) {
+	ws, err := checkoutWorktree(r, branch, intention)
+	if err != nil {
+		return ws, err
+	}
+	return openCreated(ws, r)
+}
+
+// openCreated builds + selects the window for a freshly created worktree and runs
+// the repo's setup command in its shell pane.
+func openCreated(ws Workspace, r Repo) (Workspace, error) {
 	if err := prepare(ws); err != nil {
 		return ws, err
 	}

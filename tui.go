@@ -26,7 +26,8 @@ var (
 
 const (
 	modeList = iota
-	modeForm
+	modeForm     // new worktree: intention, branch, base
+	modeCheckout // existing branch: branch, intention
 )
 
 type model struct {
@@ -52,8 +53,6 @@ type model struct {
 	pendingWS Workspace
 }
 
-const numFormFields = 3
-
 func newModel(cfg *Config, embedded bool) model {
 	intention := textinput.New()
 	intention.Placeholder = "worktree name"
@@ -65,6 +64,9 @@ func newModel(cfg *Config, embedded bool) model {
 	branch.Placeholder = "branch name"
 	branch.CharLimit = 120
 	branch.Width = 22
+	// Checkout mode autocompletes the branch field against existing branches; the
+	// accept binding mirrors base. New-worktree mode leaves ShowSuggestions off.
+	branch.KeyMap.AcceptSuggestion = key.NewBinding(key.WithKeys("right", "ctrl+f"))
 
 	base := textinput.New()
 	base.Placeholder = "base branch"
@@ -104,7 +106,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case tea.KeyMsg:
-		if m.mode == modeForm {
+		if m.mode == modeForm || m.mode == modeCheckout {
 			return m.updateForm(msg)
 		}
 		return m.updateList(msg)
@@ -172,8 +174,23 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.msg = ""
 		m.intention.SetValue("")
 		m.branch.SetValue("")
+		m.branch.ShowSuggestions = false // new branch name: no autocomplete
 		m.base.SetValue(defaultBase(repo)) // prefill, editable
 		m.base.SetSuggestions(branchList(expandPath(repo.Path)))
+		m.focusField(0)
+		return m, textinput.Blink
+	case "c":
+		if len(m.cfg.Repo) == 0 {
+			m.msg = "no [[repo]] configured to create into"
+			return m, nil
+		}
+		repo := m.cfg.Repo[0]
+		m.mode = modeCheckout
+		m.msg = ""
+		m.intention.SetValue("")
+		m.branch.SetValue("")
+		m.branch.SetSuggestions(branchList(expandPath(repo.Path)))
+		m.branch.ShowSuggestions = true
 		m.focusField(0)
 		return m, textinput.Blink
 	case "enter", " ":
@@ -293,20 +310,21 @@ func (m model) finishRemove(msg string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// focusField focuses form field i (0..numFormFields-1) and blurs the rest.
+// formFields returns the focusable inputs for the active form, in tab order.
+func (m *model) formFields() []*textinput.Model {
+	if m.mode == modeCheckout {
+		return []*textinput.Model{&m.branch, &m.intention}
+	}
+	return []*textinput.Model{&m.intention, &m.branch, &m.base}
+}
+
+// focusField focuses form field i (in formFields order) and blurs the rest.
 func (m *model) focusField(i int) {
 	m.formField = i
 	m.intention.Blur()
 	m.branch.Blur()
 	m.base.Blur()
-	switch i {
-	case 0:
-		m.intention.Focus()
-	case 1:
-		m.branch.Focus()
-	case 2:
-		m.base.Focus()
-	}
+	m.formFields()[i].Focus()
 }
 
 func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -316,29 +334,31 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.msg = ""
 		return m, nil
 	case "tab":
-		m.focusField((m.formField + 1) % numFormFields)
+		n := len(m.formFields())
+		m.focusField((m.formField + 1) % n)
 		return m, textinput.Blink
 	case "shift+tab":
-		m.focusField((m.formField - 1 + numFormFields) % numFormFields)
+		n := len(m.formFields())
+		m.focusField((m.formField - 1 + n) % n)
 		return m, textinput.Blink
 	case "enter":
 		return m.submitForm()
 	}
 
 	var cmd tea.Cmd
-	switch m.formField {
-	case 0:
-		m.intention, cmd = m.intention.Update(msg)
-	case 1:
-		m.branch, cmd = m.branch.Update(msg)
-	case 2:
-		m.base, cmd = m.base.Update(msg)
-	}
+	f := m.formFields()[m.formField]
+	*f, cmd = f.Update(msg)
 	return m, cmd
 }
 
 func (m model) submitForm() (tea.Model, tea.Cmd) {
-	ws, err := createAndOpen(m.cfg.Repo[0], m.intention.Value(), m.branch.Value(), m.base.Value())
+	var ws Workspace
+	var err error
+	if m.mode == modeCheckout {
+		ws, err = checkoutAndOpen(m.cfg.Repo[0], m.branch.Value(), m.intention.Value())
+	} else {
+		ws, err = createAndOpen(m.cfg.Repo[0], m.intention.Value(), m.branch.Value(), m.base.Value())
+	}
 	if err != nil {
 		m.msg = err.Error()
 		return m, nil
@@ -356,8 +376,11 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	if m.mode == modeForm {
+	switch m.mode {
+	case modeForm:
 		return m.formView()
+	case modeCheckout:
+		return m.checkoutView()
 	}
 	return m.listView()
 }
@@ -392,9 +415,9 @@ func (m model) listView() string {
 		b.WriteString(dimStyle.PaddingLeft(1).Render(truncate(m.msg, m.width-2)) + "\n")
 	}
 	// Short lines to fit the slim pane.
-	b.WriteString(helpStyle.Render("⏎ open  n new  d del") + "\n")
-	b.WriteString(helpStyle.Render("x close  r reload  q quit") + "\n")
-	b.WriteString(helpStyle.Render("↑↓ move") + "\n")
+	b.WriteString(helpStyle.Render("⏎ open  n new  c get") + "\n")
+	b.WriteString(helpStyle.Render("d del  x close") + "\n")
+	b.WriteString(helpStyle.Render("r reload  q quit  ↑↓ move") + "\n")
 	b.WriteString(helpStyle.Render(legend()))
 	return b.String()
 }
@@ -409,6 +432,23 @@ func (m model) formView() string {
 	b.WriteString("  " + m.branch.View() + "\n\n")
 	b.WriteString(labelStyle.Render("base") + "\n")
 	b.WriteString("  " + m.base.View() + "\n\n")
+
+	if m.msg != "" {
+		b.WriteString(errStyle.PaddingLeft(1).Render(truncate(m.msg, m.width-2)) + "\n\n")
+	}
+	b.WriteString(helpStyle.Render("⇥ field  → accept") + "\n")
+	b.WriteString(helpStyle.Render("⏎ create  esc cancel"))
+	return b.String()
+}
+
+func (m model) checkoutView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("checkout branch") + "\n\n")
+
+	b.WriteString(labelStyle.Render("branch") + "\n")
+	b.WriteString("  " + m.branch.View() + "\n\n")
+	b.WriteString(labelStyle.Render("name") + "\n")
+	b.WriteString("  " + m.intention.View() + "\n\n")
 
 	if m.msg != "" {
 		b.WriteString(errStyle.PaddingLeft(1).Render(truncate(m.msg, m.width-2)) + "\n\n")
