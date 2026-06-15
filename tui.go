@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -46,6 +47,12 @@ type model struct {
 	base      textinput.Model
 	formField int // 0 = intention, 1 = branch, 2 = base
 
+	// busy is the label of an in-flight blocking git operation (create, remove,
+	// branch delete), "" when idle. While set, the spinner animates and key input
+	// is ignored so the op can't be re-triggered mid-flight.
+	spin spinner.Model
+	busy string
+
 	// confirm holds the pending y/n confirmation, "" when none. Stages:
 	// "close", "delete", "forceDelete", "branch". pendingWS is the target,
 	// captured at key-press so a list reload can't shift it.
@@ -77,6 +84,10 @@ func newModel(cfg *Config, embedded bool) model {
 	base.ShowSuggestions = true
 	base.KeyMap.AcceptSuggestion = key.NewBinding(key.WithKeys("right", "ctrl+f"))
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
+
 	m := model{
 		cfg:        cfg,
 		workspaces: cfg.resolve(),
@@ -84,6 +95,7 @@ func newModel(cfg *Config, embedded bool) model {
 		intention:  intention,
 		branch:     branch,
 		base:       base,
+		spin:       sp,
 	}
 	m.statuses = make([]string, len(m.workspaces))
 	m.refresh()
@@ -99,13 +111,85 @@ func (m *model) refresh() {
 	}
 }
 
+// createResultMsg / removeResultMsg / branchResultMsg carry the outcome of a
+// backgrounded blocking git operation back into Update, so the spinner can stop
+// and the (multi-step) flow can resume on the main loop.
+type createResultMsg struct {
+	ws  Workspace
+	err error
+}
+type removeResultMsg struct {
+	ws     Workspace
+	forced bool
+	err    error
+}
+type branchResultMsg struct {
+	ws  Workspace
+	err error
+}
+
+// runCreate creates (or checks out) a worktree and opens it, off the main loop.
+func runCreate(r Repo, intention, branch, base string, checkout bool) tea.Cmd {
+	return func() tea.Msg {
+		var ws Workspace
+		var err error
+		if checkout {
+			ws, err = checkoutAndOpen(r, branch, intention)
+		} else {
+			ws, err = createAndOpen(r, intention, branch, base)
+		}
+		return createResultMsg{ws: ws, err: err}
+	}
+}
+
+// runRemove removes a worktree off the main loop.
+func runRemove(ws Workspace, force bool) tea.Cmd {
+	return func() tea.Msg {
+		return removeResultMsg{ws: ws, forced: force, err: removeWorktree(ws.RepoPath, ws.Dir, force)}
+	}
+}
+
+// runBranch deletes a worktree's branch off the main loop.
+func runBranch(ws Workspace) tea.Cmd {
+	return func() tea.Msg {
+		return branchResultMsg{ws: ws, err: removeBranch(ws.RepoPath, ws.Branch)}
+	}
+}
+
+// startBusy sets the busy label and returns the command batch that kicks off the
+// work and starts the spinner animation.
+func (m *model) startBusy(label string, work tea.Cmd) tea.Cmd {
+	m.busy = label
+	m.msg = ""
+	return tea.Batch(work, m.spin.Tick)
+}
+
 func (m model) Init() tea.Cmd { return textinput.Blink }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+	case spinner.TickMsg:
+		if m.busy == "" {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
+	case createResultMsg:
+		return m.onCreated(msg)
+	case removeResultMsg:
+		return m.onRemoved(msg)
+	case branchResultMsg:
+		return m.onBranchRemoved(msg)
 	case tea.KeyMsg:
+		if m.busy != "" {
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit // always allow bailing out of a stuck op
+			}
+			return m, nil // otherwise ignore input while an operation is in flight
+		}
 		if m.mode == modeForm || m.mode == modeCheckout {
 			return m.updateForm(msg)
 		}
@@ -240,44 +324,73 @@ func (m model) resolveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.msg = "cancelled"
 			return m, nil
 		}
-		err := removeWorktree(ws.RepoPath, ws.Dir, false)
-		if errors.Is(err, errWorktreeDirty) {
-			m.pendingWS = ws
-			m.confirm = "forceDelete"
-			m.msg = ws.Name + " has uncommitted changes, force delete? (y/n)"
-			return m, nil
-		}
-		if err != nil {
-			m.msg = err.Error()
-			return m, nil
-		}
-		return m.afterRemove(ws)
+		cmd := m.startBusy("removing "+ws.Name, runRemove(ws, false))
+		return m, cmd
 
 	case "forceDelete":
 		if !yes {
 			m.msg = "cancelled"
 			return m, nil
 		}
-		if err := removeWorktree(ws.RepoPath, ws.Dir, true); err != nil {
-			m.msg = err.Error()
-			return m, nil
-		}
-		return m.afterRemove(ws)
+		cmd := m.startBusy("removing "+ws.Name, runRemove(ws, true))
+		return m, cmd
 
 	case "branch":
 		if !yes {
 			return m.finishRemove("removed " + ws.Name)
 		}
-		switch err := removeBranch(ws.RepoPath, ws.Branch); {
-		case errors.Is(err, errBranchUnmerged):
-			return m.finishRemove("removed " + ws.Name + ", branch " + ws.Branch + " unmerged, kept")
-		case err != nil:
-			return m.finishRemove(err.Error())
-		default:
-			return m.finishRemove("removed " + ws.Name + " and branch " + ws.Branch)
-		}
+		cmd := m.startBusy("deleting branch "+ws.Branch, runBranch(ws))
+		return m, cmd
 	}
 	return m, nil
+}
+
+// onCreated resumes after a backgrounded create/checkout completes.
+func (m model) onCreated(msg createResultMsg) (tea.Model, tea.Cmd) {
+	m.busy = ""
+	if msg.err != nil {
+		m.msg = msg.err.Error() // stay in the form so the user can fix and retry
+		return m, nil
+	}
+	if !m.embedded {
+		m.chosen = &msg.ws
+		return m, tea.Quit
+	}
+	m.workspaces = m.cfg.resolve()
+	m.refresh()
+	m.mode = modeList
+	m.msg = "created " + msg.ws.Name
+	return m, nil
+}
+
+// onRemoved resumes after a backgrounded worktree removal completes, branching
+// into the force-delete prompt or the post-removal (branch) flow.
+func (m model) onRemoved(msg removeResultMsg) (tea.Model, tea.Cmd) {
+	m.busy = ""
+	if !msg.forced && errors.Is(msg.err, errWorktreeDirty) {
+		m.pendingWS = msg.ws
+		m.confirm = "forceDelete"
+		m.msg = msg.ws.Name + " has uncommitted changes, force delete? (y/n)"
+		return m, nil
+	}
+	if msg.err != nil {
+		m.msg = msg.err.Error()
+		return m, nil
+	}
+	return m.afterRemove(msg.ws)
+}
+
+// onBranchRemoved resumes after a backgrounded branch deletion completes.
+func (m model) onBranchRemoved(msg branchResultMsg) (tea.Model, tea.Cmd) {
+	m.busy = ""
+	switch {
+	case errors.Is(msg.err, errBranchUnmerged):
+		return m.finishRemove("removed " + msg.ws.Name + ", branch " + msg.ws.Branch + " unmerged, kept")
+	case msg.err != nil:
+		return m.finishRemove(msg.err.Error())
+	default:
+		return m.finishRemove("removed " + msg.ws.Name + " and branch " + msg.ws.Branch)
+	}
 }
 
 // afterRemove kills the worktree's tmux window (if any), then either offers to
@@ -352,30 +465,20 @@ func (m model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) submitForm() (tea.Model, tea.Cmd) {
-	var ws Workspace
-	var err error
-	if m.mode == modeCheckout {
-		ws, err = checkoutAndOpen(m.cfg.Repo[0], m.branch.Value(), m.intention.Value())
-	} else {
-		ws, err = createAndOpen(m.cfg.Repo[0], m.intention.Value(), m.branch.Value(), m.base.Value())
+	checkout := m.mode == modeCheckout
+	label := "creating " + strings.TrimSpace(m.intention.Value())
+	if checkout {
+		label = "checking out " + strings.TrimSpace(m.branch.Value())
 	}
-	if err != nil {
-		m.msg = err.Error()
-		return m, nil
-	}
-	if !m.embedded {
-		m.chosen = &ws
-		return m, tea.Quit
-	}
-	// Reload so the new worktree shows up, return to the list.
-	m.workspaces = m.cfg.resolve()
-	m.refresh()
-	m.mode = modeList
-	m.msg = "created " + ws.Name
-	return m, nil
+	work := runCreate(m.cfg.Repo[0], m.intention.Value(), m.branch.Value(), m.base.Value(), checkout)
+	cmd := m.startBusy(label, work)
+	return m, cmd
 }
 
 func (m model) View() string {
+	if m.busy != "" {
+		return m.busyView()
+	}
 	switch m.mode {
 	case modeForm:
 		return m.formView()
@@ -383,6 +486,13 @@ func (m model) View() string {
 		return m.checkoutView()
 	}
 	return m.listView()
+}
+
+func (m model) busyView() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("workspaces") + "\n\n")
+	b.WriteString("  " + m.spin.View() + " " + truncate(m.busy, m.width-5) + "…\n")
+	return b.String()
 }
 
 func (m model) listView() string {
