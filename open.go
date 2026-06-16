@@ -318,3 +318,44 @@ func statusOf(name string) string {
 	}
 	return "open"
 }
+
+// liveState is the live per-window state shown in the switcher list.
+type liveState struct {
+	status string // "active" | "open" | "" (tmux window presence)
+	claude string // "working" | "waiting" | "idle" | "" (@claude_state set by Claude Code hooks)
+}
+
+// liveStates returns the live state of every window in the grove session, keyed
+// by window name. It batches into a single tmux call (the list refreshes on a
+// timer, so per-window queries would be costly). Windows with no tab are absent.
+func liveStates() map[string]liveState {
+	if !sessionExists() {
+		return nil
+	}
+	attached := clientAttached()
+	// Real tab between fields; window names are sanitized (no tabs), @claude_state
+	// is a single word, so a tab split is unambiguous.
+	out, err := tmuxOut("list-windows", "-t", sessionName, "-F",
+		"#{window_name}\t#{window_active}\t#{@claude_state}")
+	if err != nil {
+		return nil
+	}
+	states := map[string]liveState{}
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		f := strings.SplitN(line, "\t", 3)
+		name := f[0]
+		st := "open"
+		if attached && len(f) > 1 && f[1] == "1" {
+			st = "active"
+		}
+		claude := ""
+		if len(f) > 2 {
+			claude = f[2]
+		}
+		states[name] = liveState{status: st, claude: claude}
+	}
+	return states
+}

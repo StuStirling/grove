@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -20,6 +21,11 @@ var (
 	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	windowStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green: visible window
 	detachStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow: detached session
+
+	// Claude Code state markers (set per-window by hooks; see liveStates).
+	claudeWaitStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true) // permission prompt: needs you now
+	claudeIdleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true) // finished: your turn
+	claudeWorkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))             // working
 	errStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).PaddingLeft(1)
 	labelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).PaddingLeft(1)
@@ -32,10 +38,11 @@ const (
 )
 
 type model struct {
-	cfg        *Config
-	workspaces []Workspace
-	cursor     int
-	statuses   []string // live status per workspace, parallel to workspaces
+	cfg          *Config
+	workspaces   []Workspace
+	cursor       int
+	statuses     []string // live tmux status per workspace, parallel to workspaces
+	claudeStates []string // live @claude_state per workspace, parallel to workspaces
 	msg        string
 	embedded   bool       // running as a pane inside the grove session
 	chosen     *Workspace // launcher mode: workspace picked to attach after quit
@@ -106,8 +113,14 @@ func (m *model) refresh() {
 	if len(m.statuses) != len(m.workspaces) {
 		m.statuses = make([]string, len(m.workspaces))
 	}
+	if len(m.claudeStates) != len(m.workspaces) {
+		m.claudeStates = make([]string, len(m.workspaces))
+	}
+	live := liveStates()
 	for i, ws := range m.workspaces {
-		m.statuses[i] = statusOf(ws.Name)
+		ls := live[ws.Name]
+		m.statuses[i] = ls.status
+		m.claudeStates[i] = ls.claude
 	}
 }
 
@@ -164,12 +177,29 @@ func (m *model) startBusy(label string, work tea.Cmd) tea.Cmd {
 	return tea.Batch(work, m.spin.Tick)
 }
 
-func (m model) Init() tea.Cmd { return textinput.Blink }
+// pollMsg drives the periodic refresh of live statuses (tmux presence and
+// @claude_state) so the list reflects Claude Code waiting for input without the
+// user pressing reload.
+type pollMsg struct{}
+
+const pollInterval = 1500 * time.Millisecond
+
+func pollTick() tea.Cmd {
+	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
+}
+
+func (m model) Init() tea.Cmd { return tea.Batch(textinput.Blink, pollTick()) }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+	case pollMsg:
+		// Keep the list live, but don't disturb an in-flight op or a form.
+		if m.mode == modeList && m.busy == "" {
+			m.refresh()
+		}
+		return m, pollTick()
 	case spinner.TickMsg:
 		if m.busy == "" {
 			return m, nil
@@ -514,6 +544,14 @@ func (m model) listView() string {
 		case "open":
 			row += " " + detachStyle.Render("○")
 		}
+		switch m.claudeStates[i] {
+		case "waiting":
+			row += " " + claudeWaitStyle.Render("◆") // permission prompt
+		case "idle":
+			row += " " + claudeIdleStyle.Render("◆") // finished, your turn
+		case "working":
+			row += " " + claudeWorkStyle.Render("◌")
+		}
 		b.WriteString(row + "\n")
 		if ws.Branch != "" {
 			b.WriteString("    " + dimStyle.Render(truncate(ws.Branch, m.width-5)) + "\n")
@@ -584,5 +622,7 @@ func truncate(s string, max int) string {
 }
 
 func legend() string {
-	return fmt.Sprintf("%s active tab  %s open tab", windowStyle.Render("●"), detachStyle.Render("○"))
+	return fmt.Sprintf("%s active  %s open\n %s%s claude wants you  %s busy",
+		windowStyle.Render("●"), detachStyle.Render("○"),
+		claudeWaitStyle.Render("◆"), claudeIdleStyle.Render("◆"), claudeWorkStyle.Render("◌"))
 }
