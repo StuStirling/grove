@@ -140,6 +140,17 @@ func buildLayout(ws Workspace, firstPane string) error {
 // ensureWindow makes sure a tab for this workspace exists, creating the session
 // and/or window (with its pane layout) as needed.
 func configureSession() {
+	// Forward extended key sequences (CSI-u / the kitty keyboard protocol) to the
+	// panes so apps can distinguish Shift+Enter from Enter — Claude Code uses this
+	// for multi-line input. Without it tmux collapses the modifier and Shift+Enter
+	// arrives as a plain newline. "always" forwards regardless of whether tmux
+	// detected the app's request (more reliable across pane resizes/restarts), and
+	// the extkeys terminal-feature tells tmux the outer terminal can carry them.
+	// Both are server options (no per-session scope exists), so they apply to the
+	// whole tmux server; this is harmless. A capable outer terminal (Ghostty,
+	// kitty, iTerm2, WezTerm, recent xterm) is still required.
+	_ = tmux("set-option", "-s", "extended-keys", "always")
+	_ = tmux("set-option", "-as", "terminal-features", "xterm*:extkeys")
 	// Drive the terminal's title from the active worktree's repo, so the grove
 	// window is findable among other terminals. @grove_repo is set per window in
 	// buildLayout; the format resolves against whichever window is active.
