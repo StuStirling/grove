@@ -109,6 +109,21 @@ func newModel(cfg *Config, embedded bool) model {
 	return m
 }
 
+// reload re-discovers worktrees from the config (re-running `git worktree list`
+// per repo), keeps the cursor in range, then refreshes live tmux state. Bound to
+// the manual refresh key so worktrees created outside grove get picked up; the
+// poll timer stays on the cheaper refresh() so it doesn't shell out every tick.
+func (m *model) reload() {
+	m.workspaces = m.cfg.resolve()
+	if m.cursor >= len(m.workspaces) {
+		m.cursor = len(m.workspaces) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	m.refresh()
+}
+
 func (m *model) refresh() {
 	if len(m.statuses) != len(m.workspaces) {
 		m.statuses = make([]string, len(m.workspaces))
@@ -246,7 +261,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor++
 		}
 	case "r":
-		m.refresh()
+		m.reload()
 		m.msg = "refreshed"
 	case "x":
 		if len(m.workspaces) == 0 {
@@ -386,8 +401,7 @@ func (m model) onCreated(msg createResultMsg) (tea.Model, tea.Cmd) {
 		m.chosen = &msg.ws
 		return m, tea.Quit
 	}
-	m.workspaces = m.cfg.resolve()
-	m.refresh()
+	m.reload()
 	m.mode = modeList
 	m.msg = "created " + msg.ws.Name
 	return m, nil
@@ -441,14 +455,7 @@ func (m model) afterRemove(ws Workspace) (tea.Model, tea.Cmd) {
 // finishRemove reloads the workspace list after a deletion, keeps the cursor in
 // range, and shows the final message.
 func (m model) finishRemove(msg string) (tea.Model, tea.Cmd) {
-	m.workspaces = m.cfg.resolve()
-	if m.cursor >= len(m.workspaces) {
-		m.cursor = len(m.workspaces) - 1
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	m.refresh()
+	m.reload()
 	m.msg = msg
 	return m, nil
 }
