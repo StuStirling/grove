@@ -12,10 +12,14 @@ import (
 // heavy lifting, so grove is terminal-agnostic: the default flow attaches in the
 // current terminal, and the only terminal-specific action (opening a brand-new
 // window) is driven by a configurable command template.
-const (
-	sessionName   = "grove"
-	switcherWidth = 30 // fixed width (cols) of the left switcher pane
-)
+const switcherWidth = 30 // fixed width (cols) of the left switcher pane
+
+// sessionName is the tmux session grove drives. It is keyed to the resolved
+// config so distinct repos get distinct sessions (and run concurrently in
+// separate tabs), while every grove instance for the same repo — the launcher
+// and the switcher panes embedded in each worktree window — agrees on it.
+// loadConfig sets it; the default only applies before any config is loaded.
+var sessionName = "grove"
 
 func tmux(args ...string) error {
 	out, err := exec.Command("tmux", args...).CombinedOutput()

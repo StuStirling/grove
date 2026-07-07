@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -147,6 +148,10 @@ func loadConfig() (*Config, error) {
 			localConfigName, path)
 	}
 
+	// Key the tmux session to this config so different repos run concurrently in
+	// separate tabs instead of colliding in one shared "grove" session.
+	sessionName = sessionNameFor(path)
+
 	var cfg Config
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
@@ -167,6 +172,26 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("no [[workspace]] or [[repo]] defined in %s", path)
 	}
 	return &cfg, nil
+}
+
+// sessionNameFor derives a stable, per-config tmux session name. Every grove
+// instance for the same repo resolves to the same config path (linked worktrees
+// fall back to the main worktree's config), so they share a session; different
+// repos hash to different names. The repo-dir basename keeps it readable; the
+// path hash keeps it unique when two repos share a basename.
+func sessionNameFor(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	// Canonicalise symlinks so the launcher (resolving via os.Getwd) and the
+	// embedded panes (resolving via git --git-common-dir) hash to the same name.
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	sum := sha256.Sum256([]byte(abs))
+	base := sanitizeName(filepath.Base(filepath.Dir(abs)))
+	return fmt.Sprintf("grove-%s-%x", base, sum[:3])
 }
 
 // initConfig writes a .grove.toml template at the repo root (or cwd if not in a
