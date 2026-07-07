@@ -543,22 +543,28 @@ func (m model) listView() string {
 			cursor = cursorStyle.Render("▸ ")
 			line = selectedStyle
 		}
-		row := cursor + line.Render(ws.Name)
-
+		// Indicators live in a fixed-width gutter on the left so they stay on
+		// screen even when a long name gets truncated. Absent glyphs are a
+		// space, so names stay aligned regardless of state.
+		status := " "
 		switch m.statuses[i] {
 		case "active":
-			row += " " + windowStyle.Render("●")
+			status = windowStyle.Render("●")
 		case "open":
-			row += " " + detachStyle.Render("○")
+			status = detachStyle.Render("○")
 		}
+		claude := " "
 		switch m.claudeStates[i] {
 		case "waiting":
-			row += " " + claudeWaitStyle.Render("◆") // permission prompt
+			claude = claudeWaitStyle.Render("◆") // permission prompt
 		case "idle":
-			row += " " + claudeIdleStyle.Render("◆") // finished, your turn
+			claude = claudeIdleStyle.Render("◆") // finished, your turn
 		case "working":
-			row += " " + claudeWorkStyle.Render("◌")
+			claude = claudeWorkStyle.Render("◌")
 		}
+		// cursor(2) + status(1) + claude(1) + space(1) = 5 cells of gutter.
+		name := truncate(ws.Name, m.width-6)
+		row := cursor + status + claude + " " + line.Render(name)
 		b.WriteString(row + "\n")
 		if ws.Branch != "" {
 			b.WriteString("    " + dimStyle.Render(truncate(ws.Branch, m.width-5)) + "\n")
