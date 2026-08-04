@@ -183,7 +183,14 @@ func removeCmd(args []string) {
 
 func runTUI() {
 	embedded := os.Getenv("TMUX") != ""
-	p := tea.NewProgram(newModel(mustConfig(), embedded))
+	// Alt-screen so the switcher pane has no scrollback: with tmux `mouse on`, a
+	// wheel scroll over an inline (non-alt-screen) pane drops tmux into copy-mode,
+	// which then swallows the arrow/Enter keys and navigation appears dead until
+	// the user hits Escape. Alt-screen panes don't scroll into copy-mode.
+	// ReportFocus so the switcher rescans worktrees the moment its pane regains
+	// focus (e.g. after switching to that window), instead of waiting for the
+	// 1.5s poll or a manual reload.
+	p := tea.NewProgram(newModel(mustConfig(), embedded), tea.WithAltScreen(), tea.WithReportFocus())
 	final, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "grove: %v\n", err)

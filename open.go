@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -162,6 +163,9 @@ func configureSession() {
 	_ = tmux("set-option", "-t", sessionName, "set-titles-string", "grove - #{@grove_repo}")
 	// Show a tab strip even with one window.
 	_ = tmux("set-option", "-t", sessionName, "status", "on")
+	// Deliver terminal focus in/out to panes so the switcher can rescan the
+	// moment it regains focus (see runTUI's WithReportFocus).
+	_ = tmux("set-option", "-t", sessionName, "focus-events", "on")
 	// Click to select panes/tabs and scroll (escape full-screen TUIs).
 	_ = tmux("set-option", "-t", sessionName, "mouse", "on")
 	// Make the selected pane obvious: bright active border vs dim inactive,
@@ -169,6 +173,14 @@ func configureSession() {
 	_ = tmux("set-option", "-t", sessionName, "pane-border-style", "fg=colour238")
 	_ = tmux("set-option", "-t", sessionName, "pane-active-border-style", "fg=colour40,bold")
 	_ = tmux("set-option", "-t", sessionName, "pane-border-lines", "heavy")
+	// Open new windows and splits in the active pane's directory (the current
+	// worktree), not the client's launch cwd — otherwise prefix-c lands in
+	// whatever dir the terminal was started in. Key bindings are server-global
+	// (tmux has no per-session key table), so this also applies to the user's
+	// other sessions; it matches the near-universal preference anyway.
+	_ = tmux("bind-key", "c", "new-window", "-c", "#{pane_current_path}")
+	_ = tmux("bind-key", "%", "split-window", "-h", "-c", "#{pane_current_path}")
+	_ = tmux("bind-key", "\"", "split-window", "-v", "-c", "#{pane_current_path}")
 }
 
 // groveBin returns the path to the grove executable, run as the left switcher
@@ -231,7 +243,29 @@ func prepare(ws Workspace) error {
 	if err := ensureWindow(ws); err != nil {
 		return err
 	}
-	return tmux("select-window", "-t", sessionName+":"+ws.Name)
+	if err := tmux("select-window", "-t", sessionName+":"+ws.Name); err != nil {
+		return err
+	}
+	// Poke the destination window's switcher to rescan. Focus events only reach
+	// the newly-active pane (usually the work pane), so without this a swap would
+	// leave the switcher's list stale until it's focused directly.
+	pokeReload(ws.Name)
+	return nil
+}
+
+// pokeReload signals the switcher process in window's pane 0 to rescan (see
+// externalReloadMsg). The switcher pane runs grove directly, so pane_pid is the
+// grove PID. Best-effort: a missing pane or dead pid is ignored.
+func pokeReload(window string) {
+	pid, err := tmuxOut("display-message", "-t", sessionName+":"+window+".0", "-p", "#{pane_pid}")
+	if err != nil {
+		return
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(pid))
+	if err != nil {
+		return
+	}
+	_ = syscall.Kill(n, syscall.SIGUSR1)
 }
 
 // attachHere takes over the CURRENT terminal: it replaces this process with

@@ -3,7 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -26,13 +29,13 @@ var (
 	claudeWaitStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true) // permission prompt: needs you now
 	claudeIdleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true) // finished: your turn
 	claudeWorkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))             // working
-	errStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).PaddingLeft(1)
-	labelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).PaddingLeft(1)
+	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	helpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).PaddingLeft(1)
+	labelStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).PaddingLeft(1)
 )
 
 const (
-	modeList = iota
+	modeList     = iota
 	modeForm     // new worktree: intention, branch, base
 	modeCheckout // existing branch: branch, intention
 )
@@ -43,10 +46,10 @@ type model struct {
 	cursor       int
 	statuses     []string // live tmux status per workspace, parallel to workspaces
 	claudeStates []string // live @claude_state per workspace, parallel to workspaces
-	msg        string
-	embedded   bool       // running as a pane inside the grove session
-	chosen     *Workspace // launcher mode: workspace picked to attach after quit
-	width      int        // pane width, for truncating long branch names
+	msg          string
+	embedded     bool       // running as a pane inside the grove session
+	chosen       *Workspace // launcher mode: workspace picked to attach after quit
+	width        int        // pane width, for truncating long branch names
 
 	mode      int
 	intention textinput.Model
@@ -203,7 +206,25 @@ func pollTick() tea.Cmd {
 	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(textinput.Blink, pollTick()) }
+// externalReloadMsg is delivered when another grove process signals this
+// switcher (SIGUSR1) to rescan — e.g. when grove switches to this window, so its
+// list freshens even when the focused pane is the work pane, not the switcher.
+type externalReloadMsg struct{}
+
+// reloadSig is registered once at startup so a SIGUSR1 arriving before the
+// listener command runs is still buffered and handled.
+var reloadSig = func() chan os.Signal {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGUSR1)
+	return ch
+}()
+
+func waitReloadSignal() tea.Msg {
+	<-reloadSig
+	return externalReloadMsg{}
+}
+
+func (m model) Init() tea.Cmd { return tea.Batch(textinput.Blink, pollTick(), waitReloadSignal) }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -215,6 +236,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refresh()
 		}
 		return m, pollTick()
+	case tea.FocusMsg:
+		// The pane just regained focus (e.g. the user switched to this window).
+		// Rescan worktrees so a list changed elsewhere shows up immediately,
+		// rather than waiting for a manual reload — but not mid-op or mid-form.
+		if m.mode == modeList && m.busy == "" {
+			m.reload()
+		}
+		return m, nil
+	case externalReloadMsg:
+		// Another grove process poked us (grove switched to this window). Rescan,
+		// then re-arm the listener for the next poke.
+		if m.mode == modeList && m.busy == "" {
+			m.reload()
+		}
+		return m, waitReloadSignal
 	case spinner.TickMsg:
 		if m.busy == "" {
 			return m, nil
@@ -303,7 +339,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.msg = ""
 		m.intention.SetValue("")
 		m.branch.SetValue("")
-		m.branch.ShowSuggestions = false // new branch name: no autocomplete
+		m.branch.ShowSuggestions = false   // new branch name: no autocomplete
 		m.base.SetValue(defaultBase(repo)) // prefill, editable
 		m.base.SetSuggestions(branchList(expandPath(repo.Path)))
 		m.focusField(0)

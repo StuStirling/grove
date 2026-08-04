@@ -127,6 +127,27 @@ func workspaceFor(r Repo, path, branch string) Workspace {
 	return Workspace{Name: name, Dir: path, Panes: r.Panes, Branch: branch, RepoPath: expandPath(r.Path), RepoName: repoName}
 }
 
+// resolveWorktreeRoot returns the repo path and the worktree root as absolute
+// paths. A relative worktree_root (e.g. "../worktrees") is anchored to the repo,
+// NOT the process cwd: grove creates worktrees from inside other worktrees'
+// switcher panes, whose cwd is an unrelated worktree, so a cwd-relative root
+// would resolve wrongly, land the tmux panes in a bogus directory, and leave the
+// switcher unable to find the repo's config.
+func resolveWorktreeRoot(r Repo) (repoPath, root string, err error) {
+	repoPath = expandPath(r.Path)
+	if abs, e := filepath.Abs(repoPath); e == nil {
+		repoPath = abs
+	}
+	root = expandPath(r.WorktreeRoot)
+	if root == "" {
+		return "", "", fmt.Errorf("worktree_root is not set for repo %s", r.Path)
+	}
+	if !filepath.IsAbs(root) {
+		root = filepath.Join(repoPath, root)
+	}
+	return repoPath, root, nil
+}
+
 // createWorktree creates a new git worktree at <worktree_root>/<intention> on a
 // new branch, fetching the base start-point first. It fails if the branch
 // already exists. Returns the Workspace for the new worktree.
@@ -142,10 +163,9 @@ func createWorktree(r Repo, intention, branch, base string) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("intention must not contain a path separator")
 	}
 
-	repoPath := expandPath(r.Path)
-	root := expandPath(r.WorktreeRoot)
-	if root == "" {
-		return Workspace{}, fmt.Errorf("worktree_root is not set for repo %s", r.Path)
+	repoPath, root, err := resolveWorktreeRoot(r)
+	if err != nil {
+		return Workspace{}, err
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return Workspace{}, fmt.Errorf("creating worktree root: %w", err)
@@ -171,11 +191,55 @@ func createWorktree(r Repo, intention, branch, base string) (Workspace, error) {
 		}
 	}
 
-	if out, err := exec.Command("git", "-C", repoPath,
-		"worktree", "add", "-b", branch, path, base).CombinedOutput(); err != nil {
+	// Decide the remote whose namespace the new branch should track before adding
+	// the worktree, so we know whether to suppress git's default tracking.
+	remote := upstreamRemote(repoPath, base)
+
+	addArgs := []string{"-C", repoPath, "worktree", "add", "-b", branch, path, base}
+	if remote != "" {
+		// --no-track stops git tracking the base start-point (e.g. origin/develop);
+		// we point the branch at its own origin ref below instead.
+		addArgs = []string{"-C", repoPath, "worktree", "add", "--no-track", "-b", branch, path, base}
+	}
+	if out, err := exec.Command("git", addArgs...).CombinedOutput(); err != nil {
 		return Workspace{}, fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+
+	if remote != "" {
+		if err := setUpstream(repoPath, branch, remote); err != nil {
+			return Workspace{}, err
+		}
+	}
 	return workspaceFor(r, path, branch), nil
+}
+
+// upstreamRemote picks the remote the new branch should track: the remote
+// embedded in base when base is a remote-tracking ref (<remote>/<ref>), else
+// "origin" when configured. Returns "" when no suitable remote exists.
+func upstreamRemote(repoPath, base string) string {
+	if remote, _, ok := strings.Cut(base, "/"); ok && isRemote(repoPath, remote) {
+		return remote
+	}
+	if isRemote(repoPath, "origin") {
+		return "origin"
+	}
+	return ""
+}
+
+// setUpstream configures branch to track <remote>/<branch>. The remote ref does
+// not exist until the branch is first pushed, so we write the tracking config
+// directly rather than via `git branch --set-upstream-to`, which requires the
+// upstream ref to already exist.
+func setUpstream(repoPath, branch, remote string) error {
+	if out, err := exec.Command("git", "-C", repoPath, "config",
+		"branch."+branch+".remote", remote).CombinedOutput(); err != nil {
+		return fmt.Errorf("git config branch.%s.remote: %v: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("git", "-C", repoPath, "config",
+		"branch."+branch+".merge", "refs/heads/"+branch).CombinedOutput(); err != nil {
+		return fmt.Errorf("git config branch.%s.merge: %v: %s", branch, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // checkoutWorktree creates a worktree at <worktree_root>/<intention> checked out
@@ -194,10 +258,9 @@ func checkoutWorktree(r Repo, branch, intention string) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("intention must not contain a path separator")
 	}
 
-	repoPath := expandPath(r.Path)
-	root := expandPath(r.WorktreeRoot)
-	if root == "" {
-		return Workspace{}, fmt.Errorf("worktree_root is not set for repo %s", r.Path)
+	repoPath, root, err := resolveWorktreeRoot(r)
+	if err != nil {
+		return Workspace{}, err
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return Workspace{}, fmt.Errorf("creating worktree root: %w", err)
