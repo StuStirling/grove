@@ -1,19 +1,19 @@
 # grove
 
 A **git-worktree switcher** with a GUI. `grove` lists your repo's worktrees,
-opens each one as a set of terminal panes with a fixed layout (your big pane,
-plus your tools), switches between them instantly, and creates new worktrees on
-the fly. Everything is driven from the keyboard.
+opens each one as terminal tabs (Claude Code on the left, your tools on the
+right), switches between them instantly, and creates new worktrees on the fly.
+Everything is driven from the keyboard.
 
 ```
-┌──────────────┬──────────────┬─────────┐
-│ worktrees    │   claude     │   zsh   │   left:   worktree list (⌘P to jump)
-│ ● ◆ feature  │   (big)      │         │   middle: first configured pane
-│ ○   main     │              │         │   right:  the rest (stacked if several)
-└──────────────┴──────────────┴─────────┘
+┌──────────────┬──────────────┬──────────────┐
+│ worktrees    │ ✻ claude     │ >_ zsh | ... │   left:   worktree list (⌘P to jump)
+│ ● ◆ feature  │              │              │   middle: first configured pane
+│ ○   main     │              │              │   right:  the rest, as tabs
+└──────────────┴──────────────┴──────────────┘
 ```
 
-Each worktree keeps its panes running in the background while you work in
+Each worktree keeps its tabs running in the background while you work in
 another. The sidebar shows which worktrees are open and which one's Claude Code
 is waiting for you. Works on macOS and Linux.
 
@@ -101,18 +101,19 @@ Shortcuts are menu commands, so they work while a terminal pane has focus.
 Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (plus
 **Alt** where the Mac shortcut already uses ⇧).
 
-| Worktrees | | Tabs | |
+| Worktrees | | Tabs and panes | |
 |---|---|---|---|
 | Go to worktree (type to filter, ↑↓ ↩) | ⌘P | New Claude tab | ⌘T |
 | Worktree 1–9 | ⌘1–⌘9 | New shell | ⌘⇧T |
 | Next / previous open worktree | ⌘⇧] / ⌘⇧[ | Next / previous tab | ⌘] / ⌘[ |
-| New worktree… | ⌘N | Bigger / smaller / actual text | ⌘= / ⌘- / ⌘0 |
-| New worktree from branch… | ⌘⇧N | Newline in Claude Code | ⇧↩ |
-| Close worktree (stop its tabs) | ⌘W | Open link | ⌘-click |
-| Delete worktree… | ⌘⌫ | Select over a mouse-aware app | ⌥-drag |
-| Reload worktrees | ⌘R | Keyboard shortcuts | ⌘/ |
-| Open in external terminal | ⌘⇧O | | |
-| Open repository (its own window) | ⌘O | | |
+| New worktree… | ⌘N | Split right | ⌘D |
+| New worktree from branch… | ⌘⇧N | Pane left / right | ⌘⌥← / ⌘⌥→ |
+| Close worktree (stop its tabs) | ⌘W | Zoom pane | ⌘⇧↩ |
+| Delete worktree… | ⌘⌫ | Bigger / smaller / actual text | ⌘= / ⌘- / ⌘0 |
+| Reload worktrees | ⌘R | Newline in Claude Code | ⇧↩ |
+| Open in external terminal | ⌘⇧O | Open link | ⌘-click |
+| Open repository (its own window) | ⌘O | Select over a mouse-aware app | ⌥-drag |
+| | | Keyboard shortcuts | ⌘/ |
 
 While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧O act on the highlighted
 worktree; otherwise they act on the one you're in. Dialogs take **Y / N**, ↩ and
@@ -176,7 +177,7 @@ font_size   = 13                          # pane font size in px
 [[repo]]
 # path        = ""                       # defaults to this repo (the config's dir)
 prefix        = ""                        # optional name prefix
-panes         = ["claude", ""]            # the tabs a worktree opens with ("" = your shell)
+panes         = ["claude", ""]            # first = left pane; rest = tabs in a right pane ("" = your shell)
 worktree_root = "~/code/myrepo-worktrees" # where New Worktree creates <root>/<intention>
 base          = "origin/main"             # new-branch start-point (fetched if it's a remote ref)
 setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane after creating
@@ -189,17 +190,28 @@ setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane afte
 ```
 
 `panes` is one command per tab (`""` = your login shell: `$SHELL`, zsh on macOS
-by default), e.g. `["claude", "", "lazygit"]`. When a tab's program exits its tab
-closes, and a worktree closes with its last tab. Config is read when the window
-opens; restart grove after editing it.
+by default). A worktree opens with the first in the left pane and the rest as
+tabs in a right pane, e.g. `["claude", "", "lazygit"]` is claude | zsh, lazygit;
+a single entry opens unsplit. When a tab's program exits its tab closes, and a
+worktree closes with its last tab. Config is read when the window opens; restart
+grove after editing it.
 
 Add tabs as you go: **⌘T** opens another Claude Code session in the worktree
 (your first Claude entry in `panes`, flags and all, else `claude`) and **⌘⇧T** a
-shell; the **+** at the end of the tab bar does either. Tabs are named after
-their program and numbered when there are several (`zsh`, `zsh 2`). A tab whose
-Claude Code wants you shows ◆ until you look at it. Closing a tab (×) stops its
-program, and asks first while Claude Code is working or a shell is running
+shell; the **+** at the end of a tab bar does either in that pane. Tabs are named
+after their program and numbered when there are several (`zsh`, `zsh 2`). A tab
+whose Claude Code wants you shows ◆ until you look at it. Closing a tab (×) stops
+its program, and asks first while Claude Code is working or a shell is running
 something. A worktree with no tabs offers to open one.
+
+A worktree shows one pane of tabs or two side by side. **⌘D** (or ◫ in the tab
+bar) splits: the tab you're in moves to a new right pane, or with a single tab a
+new shell opens there. Drag the divider (or focus it and press ←/→) to resize; the
+split is remembered per worktree. Drag tabs to reorder them or onto the other
+pane's tab bar; → / ← moves the current tab across, ⊟ closes a pane (its tabs
+join the other), and a pane goes when its last tab does. **⌘⌥←/→** moves between
+panes and **⌘⇧↩** zooms the one you're in to the full width. Tabs don't survive a
+restart: quitting grove stops them.
 
 ## How it works
 

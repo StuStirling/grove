@@ -490,6 +490,9 @@ var shortcuts = []shortcut{
 	{"File", "", "", "", nil},
 	{"File", "Reload Worktrees", "reload", "r", cmdMod},
 
+	{"View", "Split Right", "split", "d", cmdMod},
+	{"View", "Zoom Pane", "zoom", "return", shiftMod},
+	{"View", "", "", "", nil},
 	{"View", "Bigger Text", "font-up", "=", cmdMod},
 	{"View", "Smaller Text", "font-down", "-", cmdMod},
 	{"View", "Actual Size", "font-reset", "0", cmdMod},
@@ -500,6 +503,8 @@ var shortcuts = []shortcut{
 	{"Go", "", "", "", nil},
 	{"Go", "Next Tab", "next-tab", "]", cmdMod},
 	{"Go", "Previous Tab", "prev-tab", "[", cmdMod},
+	{"Go", "Pane Left", "pane-left", "left", altMod},
+	{"Go", "Pane Right", "pane-right", "right", altMod},
 
 	{"Help", "Keyboard Shortcuts", "help", "/", cmdMod},
 }

@@ -5,7 +5,7 @@ import type { main } from '../wailsjs/go/models'
 import { WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
-import { cycle, focusedTab, place, sync, type Layout } from './layout'
+import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { errText, key } from './util'
 
 type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; resolve: (yes: boolean) => void }
@@ -13,7 +13,13 @@ type Modal = { kind: 'new' } | { kind: 'checkout' } | { kind: 'help' } | Confirm
 
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
+const SPLIT_KEY = 'grove.split:' // + worktree name: its split ratio
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace'
+
+const savedRatio = (ws: string) => {
+  const r = Number(localStorage.getItem(SPLIT_KEY + ws))
+  return r > 0 && r < 1 ? r : 0.5
+}
 
 // Focus a pane's terminal, waiting a few frames for it to mount and for a
 // closing dialog to unmount. A dialog that stays open keeps focus.
@@ -65,7 +71,7 @@ export default function App() {
     setSnap(s)
     setLayouts((ls) => {
       const next: Record<string, Layout> = {}
-      for (const w of s.workspaces ?? []) if (w.open) next[w.name] = sync(ls[w.name], w.panes ?? [])
+      for (const w of s.workspaces ?? []) if (w.open) next[w.name] = sync(ls[w.name], w.panes ?? [], savedRatio(w.name))
       return next
     })
   }
@@ -231,6 +237,16 @@ export default function App() {
     focusNow()
   }
 
+  // splitRight moves the focused tab into a new right pane; with a single tab
+  // there, a new shell opens in the right pane instead.
+  function splitRight(ws = sel?.name) {
+    const l = ws ? layouts[ws] : undefined
+    if (!ws || !l) return say('open a worktree first')
+    if (!split(l)) return newTab(ws, 'shell', 1)
+    setLayout(ws, (l) => split(l) ?? l)
+    focusNow()
+  }
+
   function cycleWs(d: number) {
     const open = all.filter((w) => w.open)
     if (open.length === 0) return say('no worktrees are open')
@@ -289,6 +305,14 @@ export default function App() {
         return change((l) => cycle(l, 1))
       case 'prev-tab':
         return change((l) => cycle(l, -1))
+      case 'split':
+        return splitRight()
+      case 'pane-left':
+        return change((l) => focusPane(l, 0))
+      case 'pane-right':
+        return change((l) => focusPane(l, 1))
+      case 'zoom':
+        return change(toggleZoom)
       case 'font-up':
         return setFont(fontDelta + 1)
       case 'font-down':
@@ -468,8 +492,13 @@ export default function App() {
                   setLayout(w.name, f)
                   if (focus) focusNow()
                 }}
+                onRatio={(ratio, save) => {
+                  setLayout(w.name, (l) => ({ ...l, ratio }))
+                  if (save) localStorage.setItem(SPLIT_KEY + w.name, String(ratio))
+                }}
                 onNewTab={(kind, i) => newTab(w.name, kind, i)}
                 onCloseTab={(id) => closeTab(w.name, id)}
+                onSplit={() => splitRight(w.name)}
               />
             ),
         )}
@@ -513,7 +542,7 @@ export default function App() {
         </span>
         <span className="hints">
           {key(snap, 'Go to Worktree')} go to · {key(snap, 'New Worktree')} new · {key(snap, 'New Claude Tab')} claude · {key(snap, 'New Shell')} shell ·{' '}
-          {key(snap, 'Keyboard Shortcuts')} shortcuts
+          {key(snap, 'Split Right')} split · {key(snap, 'Keyboard Shortcuts')} shortcuts
         </span>
       </footer>
 
