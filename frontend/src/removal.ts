@@ -14,12 +14,13 @@ type State =
   | { kind: 'deleting' } // Delete branch in flight
   | { kind: 'failed'; reason: string; detail: string; dirty: boolean }
 
-// The worktree and its place in the list are kept so its row stays put after a
-// reload drops the worktree, until the row is dismissed or collapses.
-export type Removal = State & { ws: main.WorkspaceInfo; index: number }
+// The worktree and the rows above it are kept so its row stays put after a
+// reload drops the worktree, until the row is dismissed or collapses. gone: a
+// shown snapshot no longer lists the worktree.
+export type Removal = State & { ws: main.WorkspaceInfo; above: string[]; gone: boolean }
 export type Removals = Record<string, Removal>
 
-const put = (rs: Removals, r: Removal, s: State): Removals => ({ ...rs, [r.ws.name]: { ws: r.ws, index: r.index, ...s } })
+const put = (rs: Removals, r: Removal, s: State): Removals => ({ ...rs, [r.ws.name]: { ws: r.ws, above: r.above, gone: r.gone, ...s } })
 const drop = (rs: Removals, name: string): Removals => {
   const { [name]: _, ...rest } = rs
   return rest
@@ -31,7 +32,12 @@ const kept = (reason: string, detail: string, now: number): State => ({ kind: 'k
 // or one that failed.
 export const usable = (r?: Removal) => !r || r.kind === 'failed'
 
-export const start = (rs: Removals, ws: main.WorkspaceInfo, index: number): Removals => ({ ...rs, [ws.name]: { ws, index, kind: 'removing' } })
+// start begins removing a worktree shown in listed. Its row remembers the names
+// above it there; a retried removal keeps the place it had.
+export function start(rs: Removals, ws: main.WorkspaceInfo, listed: main.WorkspaceInfo[]): Removals {
+  const above = rs[ws.name]?.above ?? listed.slice(0, Math.max(0, listed.findIndex((w) => w.name === ws.name))).map((w) => w.name)
+  return { ...rs, [ws.name]: { ws, above, gone: false, kind: 'removing' } }
+}
 
 // result applies Remove's answer. A row that is no longer removing (dismissed)
 // ignores it.
@@ -97,14 +103,36 @@ export function tick(rs: Removals, now: number): Removals {
   return out
 }
 
+// sync applies a snapshot now on screen. A removed row whose worktree it lacks
+// is marked gone; a later snapshot listing that name again means a new worktree,
+// so the row goes rather than lend it its state. (A snapshot from before the
+// reload lists the old worktree, but can't drop an unmarked row.) A failed
+// removal whose worktree went some other way goes too: its goal was reached.
+export function sync(rs: Removals, list: main.WorkspaceInfo[]): Removals {
+  const have = new Set(list.map((w) => w.name))
+  let out = rs
+  for (const r of Object.values(rs)) {
+    const here = have.has(r.ws.name)
+    if ((here && r.gone) || (!here && r.kind === 'failed')) out = drop(out, r.ws.name)
+    else if (!here && !r.gone && r.kind !== 'removing') out = { ...out, [r.ws.name]: { ...r, gone: true } }
+  }
+  return out
+}
+
 // withRemovals puts rows whose worktree has gone from the list back where they
-// were.
+// were: under the nearest row above them that is still shown (perhaps another
+// such row), else at the top.
 export function withRemovals(list: main.WorkspaceInfo[], rs: Removals): main.WorkspaceInfo[] {
   const out = [...list]
   const have = new Set(list.map((w) => w.name))
-  const gone = Object.values(rs)
-    .filter((r) => !have.has(r.ws.name))
-    .sort((a, b) => a.index - b.index)
-  for (const r of gone) out.splice(Math.min(r.index, out.length), 0, r.ws)
+  for (const r of Object.values(rs)) {
+    if (have.has(r.ws.name)) continue
+    const above = new Set(r.above)
+    let at = 0
+    out.forEach((w, i) => {
+      if (above.has(w.name)) at = i + 1
+    })
+    out.splice(at, 0, r.ws)
+  }
   return out
 }

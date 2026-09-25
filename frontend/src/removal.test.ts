@@ -8,11 +8,11 @@ const res = (status: string, extra: Partial<main.RemoveResult> = {}) => ({ statu
 const branch = (kept: string, detail = '') => ({ kept, detail }) as main.BranchResult
 
 test('a clean removal shows done, collapses, then goes', () => {
-  let rs = rm.start({}, ws('a'), 0)
+  let rs = rm.start({}, ws('a'), [])
   assert.equal(rs.a.kind, 'removing')
   assert.equal(rm.usable(rs.a), false)
   rs = rm.result(rs, 'a', res('removed'), 1000)
-  assert.deepEqual(rs.a, { ws: rs.a.ws, index: 0, kind: 'done', until: 1000 + rm.DONE_MS, collapsing: false })
+  assert.deepEqual(rs.a, { ws: rs.a.ws, above: [], gone: false, kind: 'done', until: 1000 + rm.DONE_MS, collapsing: false })
   assert.equal(rm.tick(rs, 1000 + rm.DONE_MS - 1), rs, 'nothing due yet')
   rs = rm.tick(rs, 1000 + rm.DONE_MS)
   assert.equal(rs.a.kind === 'done' && rs.a.collapsing, true)
@@ -21,9 +21,9 @@ test('a clean removal shows done, collapses, then goes', () => {
 })
 
 test('a kept branch waits, pauses while held and resumes with the time left', () => {
-  let rs = rm.result(rm.start({}, ws('a'), 0), 'a', res('removed', { branchKept: 'unmerged' }), 0)
+  let rs = rm.result(rm.start({}, ws('a'), []), 'a', res('removed', { branchKept: 'unmerged' }), 0)
   assert.equal(rs.a.kind === 'kept' && rs.a.reason, 'unmerged')
-  const why = rm.result(rm.start({}, ws('a'), 0), 'a', res('removed', { branchKept: 'locked', branchDetail: 'error: locked\nmore' }), 0)
+  const why = rm.result(rm.start({}, ws('a'), []), 'a', res('removed', { branchKept: 'locked', branchDetail: 'error: locked\nmore' }), 0)
   assert.equal(why.a.kind === 'kept' && why.a.detail, 'error: locked\nmore')
   assert.equal(rm.nextDeadline(rs), rm.KEPT_MS)
   rs = rm.hold(rs, 'a', true, 4000)
@@ -36,14 +36,14 @@ test('a kept branch waits, pauses while held and resumes with the time left', ()
 })
 
 test('dismiss drops a kept row only', () => {
-  const removing = rm.start({}, ws('a'), 0)
+  const removing = rm.start({}, ws('a'), [])
   assert.equal(rm.dismiss(removing, 'a'), removing)
   const kept = rm.result(removing, 'a', res('removed', { branchKept: 'unmerged' }), 0)
   assert.deepEqual(rm.dismiss(kept, 'a'), {})
 })
 
 test('delete branch: kept, deleting, then done or back to kept with the error', () => {
-  const kept = rm.result(rm.start({}, ws('a'), 0), 'a', res('removed', { branchKept: 'unmerged' }), 0)
+  const kept = rm.result(rm.start({}, ws('a'), []), 'a', res('removed', { branchKept: 'unmerged' }), 0)
   const deleting = rm.deleting(kept, kept.a)
   assert.equal(deleting.a.kind, 'deleting')
   assert.equal(rm.usable(deleting.a), false)
@@ -56,19 +56,19 @@ test('delete branch: kept, deleting, then done or back to kept with the error', 
 })
 
 test('delete branch after the row timed out behind the confirm brings it back', () => {
-  const kept = rm.result(rm.start({}, ws('a'), 3), 'a', res('removed', { branchKept: 'unmerged' }), 0)
+  const kept = rm.result(rm.start({}, ws('a'), ['x', 'a'].map(ws)), 'a', res('removed', { branchKept: 'unmerged' }), 0)
   const expired = rm.tick(kept, rm.KEPT_MS)
   assert.deepEqual(expired, {})
   const rs = rm.deleting(expired, kept.a)
   assert.equal(rs.a.kind, 'deleting')
-  assert.equal(rs.a.index, 3)
+  assert.deepEqual(rs.a.above, ['x'])
 })
 
 test('a failed removal can be forced or kept', () => {
-  const failed = rm.result(rm.start({}, ws('a'), 0), 'a', res('dirty', { reason: '2 uncommitted changes', detail: 'fatal: …' }), 0)
-  assert.deepEqual(failed.a, { ws: failed.a.ws, index: 0, kind: 'failed', reason: '2 uncommitted changes', detail: 'fatal: …', dirty: true })
+  const failed = rm.result(rm.start({}, ws('a'), []), 'a', res('dirty', { reason: '2 uncommitted changes', detail: 'fatal: …' }), 0)
+  assert.deepEqual(failed.a, { ws: failed.a.ws, above: [], gone: false, kind: 'failed', reason: '2 uncommitted changes', detail: 'fatal: …', dirty: true })
   assert.equal(rm.usable(failed.a), true, 'the worktree is still there')
-  const other = rm.result(rm.start({}, ws('a'), 0), 'a', res('failed', { reason: 'nope' }), 0)
+  const other = rm.result(rm.start({}, ws('a'), []), 'a', res('failed', { reason: 'nope' }), 0)
   assert.equal(other.a.kind === 'failed' && other.a.dirty, false)
 
   assert.equal(rm.force(failed, 'a').a.kind, 'removing')
@@ -81,12 +81,12 @@ test('a failed removal can be forced or kept', () => {
 test('a result for a row that was dismissed is ignored', () => {
   assert.deepEqual(rm.result({}, 'a', res('removed'), 0), {})
   assert.deepEqual(rm.branchResult({}, 'a', branch(''), 0), {})
-  const kept = rm.result(rm.start({}, ws('a'), 0), 'a', res('removed', { branchKept: 'unmerged' }), 0)
+  const kept = rm.result(rm.start({}, ws('a'), []), 'a', res('removed', { branchKept: 'unmerged' }), 0)
   assert.equal(rm.result(kept, 'a', res('failed'), 0), kept, 'only a removing row takes a result')
 })
 
 test('several removals at once stay independent', () => {
-  let rs = rm.start(rm.start(rm.start({}, ws('a'), 0), ws('b'), 1), ws('c'), 2)
+  let rs = rm.start(rm.start(rm.start({}, ws('a'), []), ws('b'), []), ws('c'), [])
   rs = rm.result(rs, 'b', res('dirty', { reason: '1 uncommitted change' }), 10)
   rs = rm.result(rs, 'a', res('removed', { branchKept: 'unmerged' }), 20)
   assert.deepEqual([rs.a.kind, rs.b.kind, rs.c.kind], ['kept', 'failed', 'removing'])
@@ -100,11 +100,52 @@ test('several removals at once stay independent', () => {
   assert.equal(rs.b.kind, 'failed', "c's timer leaves b alone")
 })
 
+const names = (l: main.WorkspaceInfo[]) => l.map((w) => w.name).join('')
+
 test('removed rows go back where they were', () => {
   const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(ws)
-  const rs = rm.start(rm.start({}, b, 1), d, 3)
-  const names = (l: main.WorkspaceInfo[]) => l.map((w) => w.name).join('')
+  const rs = rm.start(rm.start({}, b, [a, b, c, d]), d, [a, b, c, d])
   assert.equal(names(rm.withRemovals([a, c], rs)), 'abcd')
   assert.equal(names(rm.withRemovals([a, b, c], rs)), 'abcd', 'only rows missing from the list come back')
-  assert.equal(names(rm.withRemovals([], rs)), 'bd', 'positions past the end clamp')
+  assert.equal(names(rm.withRemovals([], rs)), 'bd', 'with nothing above left, they go first')
+})
+
+test('a removal under a removed row keeps its place, even once that row has collapsed', () => {
+  const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(ws)
+  // b goes, its branch kept, and the list reloads without it; then d goes.
+  let rs = rm.result(rm.start({}, b, [a, b, c, d, e]), 'b', res('removed', { branchKept: 'unmerged' }), 0)
+  const listed = rm.withRemovals([a, c, d, e], rs)
+  assert.equal(names(listed), 'abcde')
+  rs = rm.result(rm.start(rs, d, listed), 'd', res('removed'), 0)
+  assert.equal(names(rm.withRemovals([a, c, e], rs)), 'abcde')
+
+  // c goes while b's row is still there, then b's row goes.
+  rs = rm.start(rs, c, rm.withRemovals([a, c, e], rs))
+  assert.equal(names(rm.withRemovals([a, e], rs)), 'abcde')
+  rs = rm.dismiss(rs, 'b')
+  assert.equal(names(rm.withRemovals([a, e], rs)), 'acde')
+})
+
+test('a retried removal keeps its place', () => {
+  const [a, b] = ['a', 'b'].map(ws)
+  const failed = rm.result(rm.start({}, b, [a, b]), 'b', res('failed', { reason: 'locked' }), 0)
+  assert.deepEqual(rm.start(failed, b, [b]).b.above, ['a'])
+})
+
+test('a removed row goes when a new worktree takes its name', () => {
+  let rs = rm.result(rm.start({}, ws('a'), []), 'a', res('removed', { branchKept: 'unmerged' }), 0)
+  assert.equal(rm.sync(rs, [ws('a')]), rs, 'a snapshot from before the reload leaves it')
+  rs = rm.sync(rs, [])
+  assert.equal(rs.a.gone, true)
+  assert.equal(rm.sync(rs, []), rs, 'marked once')
+  assert.equal(rm.deleting(rs, rs.a).a.gone, true, 'still gone while its branch is deleted')
+  assert.deepEqual(rm.sync(rs, [ws('a')]), {}, 'the name is back: a new worktree')
+})
+
+test("a failed removal goes once its worktree has; one in flight is left alone", () => {
+  const failed = rm.result(rm.start({}, ws('a'), []), 'a', res('failed', { reason: 'locked' }), 0)
+  assert.equal(rm.sync(failed, [ws('a')]), failed)
+  assert.deepEqual(rm.sync(failed, []), {})
+  const removing = rm.start({}, ws('a'), [])
+  assert.equal(rm.sync(removing, []), removing)
 })

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as api from '../wailsjs/go/main/App'
 import { EventsOn, WindowSetTitle } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
@@ -61,8 +61,9 @@ export default function App() {
   const say = (text: string, err = false) => setMsg({ text, err })
 
   // fetchSnap shows a snapshot and brings each open worktree's layout in line
-  // with its tabs; a closed worktree's layout goes, so it reopens fresh. A reply
-  // older than one already shown is dropped: it would undo a newer tab change.
+  // with its tabs, and the removal rows with its worktrees; a closed worktree's
+  // layout goes, so it reopens fresh. A reply older than one already shown is
+  // dropped: it would undo a newer tab change.
   async function fetchSnap(get: () => Promise<main.Snapshot>) {
     const n = ++snapSeq.current.asked
     const s = await get()
@@ -74,6 +75,7 @@ export default function App() {
       for (const w of s.workspaces ?? []) if (w.open) next[w.name] = sync(ls[w.name], w.panes ?? [], savedRatio(w.name))
       return next
     })
+    setRemovals((rs) => rm.sync(rs, s.workspaces ?? []))
   }
   const refresh = () => fetchSnap(api.State)
   const reload = async (manual: boolean) => {
@@ -106,7 +108,9 @@ export default function App() {
 
   // openWs starts a workspace's panes if needed and switches to it.
   async function openWs(name: string) {
-    if (!rm.usable(removals[name])) return // being removed, or gone
+    // Not a worktree being removed. A gone row's name is a new worktree's, which
+    // may open (just made) before its snapshot drops the row.
+    if (!rm.usable(removals[name]) && !removals[name].gone) return
     try {
       await api.Open(name)
       setSelected(name)
@@ -135,10 +139,7 @@ export default function App() {
 
   // The action target: the list cursor while the sidebar has focus (as the TUI
   // acted on its cursor), else the selected workspace.
-  const target = (): main.WorkspaceInfo | undefined => {
-    const w = listFocused ? filtered[cursor] : sel
-    return w && rm.usable(removals[w.name]) ? w : undefined
-  }
+  const target = (): main.WorkspaceInfo | undefined => (listFocused ? filtered[cursor] : sel)
 
   async function closeWs(ws: main.WorkspaceInfo) {
     if (!ws.open) return say(`${ws.name} is not open`)
@@ -157,7 +158,7 @@ export default function App() {
   async function deleteWs(ws: main.WorkspaceInfo) {
     // A manual [[workspace]] isn't a worktree: Remove refuses it, in its row.
     if (ws.repoPath && !(await confirm(`Delete worktree ${ws.name}?`, `Removes ${ws.dir} and stops its panes.`, true))) return
-    setRemovals((rs) => rm.start(rs, ws, Math.max(0, all.findIndex((w) => w.name === ws.name))))
+    setRemovals((rs) => rm.start(rs, ws, listed))
     await removeRow(ws.name, false)
   }
 
@@ -203,6 +204,7 @@ export default function App() {
   // just that tab if it isn't open) and shows it in pane i, else the focused one.
   async function newTab(ws: string | undefined, kind: 'claude' | 'shell', i?: number) {
     if (!ws) return say('no worktree selected')
+    if (!rm.usable(removals[ws])) return // no new process in a worktree being deleted
     try {
       const p = await api.NewTab(ws, kind)
       await refresh() // so no older snapshot can drop the tab after it's placed
@@ -248,7 +250,7 @@ export default function App() {
   }
 
   function cycleWs(d: number) {
-    const open = all.filter((w) => w.open)
+    const open = all.filter((w) => w.open && rm.usable(removals[w.name]))
     if (open.length === 0) return say('no worktrees are open')
     const i = open.findIndex((w) => w.name === selected)
     const next = i < 0 ? open[d > 0 ? 0 : open.length - 1] : open[(i + d + open.length) % open.length]
@@ -275,7 +277,10 @@ export default function App() {
       return
     }
     const ws = target()
-    const need = (f: (w: main.WorkspaceInfo) => unknown) => (ws ? f(ws) : say('no worktree selected'))
+    const need = (f: (w: main.WorkspaceInfo) => unknown) => {
+      if (!ws) return say('no worktree selected')
+      if (rm.usable(removals[ws.name])) return f(ws) // else its row says what's happening
+    }
     switch (action) {
       case 'open-repo':
         return openRepo()
@@ -396,10 +401,25 @@ export default function App() {
     if (selTab && (selMark === 'idle' || selMark === 'waiting') && document.hasFocus()) api.SeenTab(selTab)
   }, [selTab, selMark])
 
-  // Forget a selection whose worktree is gone.
+  // Forget a selection whose worktree is gone. Its terminals went with it, so
+  // keys go to the worktree list rather than nowhere.
   useEffect(() => {
-    if (selected && snap && !all.some((w) => w.name === selected)) setSelected(null)
+    if (selected && snap && !all.some((w) => w.name === selected)) {
+      setSelected(null)
+      if (!modal && document.activeElement === document.body) focusList()
+    }
   }, [snap])
+
+  // The list cursor follows its row when rows above it come or go (a removed
+  // row collapsing), so ↩ and ⌘⌫ act on the row you picked; else it is clamped.
+  const cursorRow = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    cursorRow.current = filtered[cursor]?.name
+  })
+  useLayoutEffect(() => {
+    const i = filtered.findIndex((w) => w.name === cursorRow.current)
+    if (i >= 0) setCursor(i)
+  }, [listed.map((w) => w.name).join('\n')])
   useEffect(() => setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1))), [filtered.length])
 
   // Run removal rows' timers: "Removed." collapsing away, a kept branch's wait.
@@ -438,7 +458,7 @@ export default function App() {
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const w = filtered[cursor]
-      if (w) openWs(w.name)
+      if (w && rm.usable(removals[w.name])) openWs(w.name)
     } else if (e.key === 'Escape') {
       e.preventDefault()
       leaveList()
