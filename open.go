@@ -163,6 +163,12 @@ func configureSession() {
 	_ = tmux("set-option", "-t", sessionName, "set-titles-string", "grove - #{@grove_repo}")
 	// Show a tab strip even with one window.
 	_ = tmux("set-option", "-t", sessionName, "status", "on")
+	// Size each window to the smallest attached client. The same repo session is
+	// shared by every grove instance, so opening it from a second, smaller
+	// terminal leaves the default `latest` sizing the window to one client while
+	// the other has the status line drawn over its bottom pane row. `smallest`
+	// keeps the window within every client, so none clips.
+	_ = tmux("set-option", "-t", sessionName, "window-size", "smallest")
 	// Deliver terminal focus in/out to panes so the switcher can rescan the
 	// moment it regains focus (see runTUI's WithReportFocus).
 	_ = tmux("set-option", "-t", sessionName, "focus-events", "on")
