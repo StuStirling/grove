@@ -243,12 +243,32 @@ func (s *sessions) close(ws string) error {
 // closeAll stops every pane, on quit.
 func (s *sessions) closeAll() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var kills []func()
+	var dones []chan struct{}
 	for _, p := range s.panes {
-		hangup(p)
+		kills = append(kills, hangup(p))
+		if p.done != nil {
+			dones = append(dones, p.done)
+		}
 	}
 	s.panes = map[string]*pane{}
 	s.open = map[string][]*pane{}
+	s.mu.Unlock()
+	// The app exits before hangup's timers fire, so wait out the grace here (it
+	// ends early once every pane has exited) and kill what's left ourselves.
+	t := time.NewTimer(hangupGrace)
+	defer t.Stop()
+wait:
+	for _, d := range dones {
+		select {
+		case <-d:
+		case <-t.C:
+			break wait
+		}
+	}
+	for _, kill := range kills {
+		kill()
+	}
 }
 
 // hangupGrace is how long a hung-up pane's programs get to exit before they are
@@ -260,10 +280,11 @@ var hangupGrace = 2 * time.Second
 // gunicorn) would outlive that, keeping the pty and its goroutines, so after
 // hangupGrace it is SIGKILLed: the pane's group unless its process has exited by
 // then (its pid may be reused once reaped), and the tty's foreground job, if in
-// another group, either way, since shells pass SIGHUP on to it and exit.
-func hangup(p *pane) {
+// another group, either way, since shells pass SIGHUP on to it and exit. It
+// returns that kill for closeAll, which can't wait for the timer.
+func hangup(p *pane) (kill func()) {
 	if p.f == nil {
-		return
+		return func() {}
 	}
 	pid := p.cmd.Process.Pid
 	job, err := foreground(p.f)
@@ -272,7 +293,7 @@ func hangup(p *pane) {
 	}
 	_ = syscall.Kill(-pid, syscall.SIGHUP)
 	_ = p.f.Close()
-	time.AfterFunc(hangupGrace, func() {
+	kill = func() {
 		select {
 		case <-p.done:
 		default:
@@ -281,7 +302,9 @@ func hangup(p *pane) {
 		if job != pid {
 			_ = syscall.Kill(-job, syscall.SIGKILL)
 		}
-	})
+	}
+	time.AfterFunc(hangupGrace, kill)
+	return kill
 }
 
 // setClaude records the Claude Code state reported by a pane's hook (`grove

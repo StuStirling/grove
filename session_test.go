@@ -381,3 +381,27 @@ func TestPaneKind(t *testing.T) {
 		}
 	}
 }
+
+// Quitting kills what ignores SIGHUP before closeAll returns (the app exits
+// right after), rather than leaving it to hangup's timer.
+func TestCloseAllKillsWhatIgnoresSIGHUP(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	defer func(g time.Duration) { hangupGrace = g }(hangupGrace)
+	hangupGrace = time.Second
+	r := &recorder{}
+	s := newSessions("", r.emit)
+	p := s.newTab(Workspace{Name: "w", Dir: t.TempDir()}, `trap "" HUP; echo up-$((6*7)); while :; do sleep 1; done`)
+	if err := s.start(p.ID, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the tab", func() bool { return strings.Contains(r.output(), "up-42") })
+	s.mu.Lock()
+	done := s.panes[p.ID].done
+	s.mu.Unlock()
+	s.closeAll()
+	select {
+	case <-done: // killed and reaped just after closeAll
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("closeAll returned without killing a pane that ignores SIGHUP")
+	}
+}
