@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -33,6 +34,7 @@ type pane struct {
 	setup string   // typed into the pane once it starts (the repo's setup command)
 	f     *os.File // pty master; nil until started
 	cmd   *exec.Cmd
+	done  chan struct{} // closed once the process has exited and been reaped
 }
 
 // sessions owns every running pane. A workspace is "open" while it has an entry
@@ -145,7 +147,7 @@ func (s *sessions) start(id string, cols, rows int) error {
 	if err != nil {
 		return fmt.Errorf("starting %q: %w", p.Cmd, err)
 	}
-	p.f, p.cmd = f, c
+	p.f, p.cmd, p.done = f, c, make(chan struct{})
 	if p.setup != "" {
 		// Typed ahead: the shell reads it once it's ready.
 		_, _ = f.WriteString(p.setup + "\r")
@@ -153,6 +155,7 @@ func (s *sessions) start(id string, cols, rows int) error {
 	go s.pump(p)
 	go func() {
 		_ = c.Wait()
+		close(p.done)
 		s.drop(p)
 	}()
 	return nil
@@ -248,14 +251,37 @@ func (s *sessions) closeAll() {
 	s.open = map[string][]*pane{}
 }
 
+// hangupGrace is how long a hung-up pane's programs get to exit before they are
+// killed. A var so tests can shorten it.
+var hangupGrace = 2 * time.Second
+
 // hangup does what closing a terminal tab does: SIGHUP the pane's process group
-// and close the pty. The pump goroutine then reaps the process.
+// and close the pty. A program that ignores or handles SIGHUP (`trap "" HUP`,
+// gunicorn) would outlive that, keeping the pty and its goroutines, so after
+// hangupGrace it is SIGKILLed: the pane's group unless its process has exited by
+// then (its pid may be reused once reaped), and the tty's foreground job, if in
+// another group, either way, since shells pass SIGHUP on to it and exit.
 func hangup(p *pane) {
 	if p.f == nil {
 		return
 	}
-	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGHUP)
+	pid := p.cmd.Process.Pid
+	job, err := foreground(p.f)
+	if err != nil {
+		job = pid
+	}
+	_ = syscall.Kill(-pid, syscall.SIGHUP)
 	_ = p.f.Close()
+	time.AfterFunc(hangupGrace, func() {
+		select {
+		case <-p.done:
+		default:
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		}
+		if job != pid {
+			_ = syscall.Kill(-job, syscall.SIGKILL)
+		}
+	})
 }
 
 // setClaude records the Claude Code state reported by a pane's hook (`grove
@@ -289,7 +315,8 @@ func (s *sessions) seen(id string) {
 }
 
 // busy reports whether closing a pane would interrupt something: Claude Code
-// working, or a program in the foreground of a shell.
+// working, a configured command (the shell runs it in its own place, so it is
+// running for as long as the tab is), or a program in the foreground of a shell.
 func (s *sessions) busy(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,13 +327,17 @@ func (s *sessions) busy(id string) bool {
 	if p.Kind == "claude" {
 		return p.Claude == "working"
 	}
+	if strings.TrimSpace(p.Cmd) != "" {
+		return true
+	}
 	pgrp, err := foreground(p.f)
 	return err == nil && pgrp != p.cmd.Process.Pid
 }
 
 // foreground returns the pty's foreground process group. It goes through
-// SyscallConn because f.Fd() would switch the fd to blocking mode, and then
-// hangup's Close could no longer interrupt the pump's Read.
+// SyscallConn rather than f.Fd(), though the fd is in blocking mode anyway (pty
+// opens it so on macOS, and pty.Setsize calls Fd). So hangup's Close can't
+// interrupt the pump's Read: that ends once the pane's processes are gone.
 func foreground(f *os.File) (int, error) {
 	rc, err := f.SyscallConn()
 	if err != nil {

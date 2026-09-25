@@ -235,6 +235,19 @@ func TestTabBusy(t *testing.T) {
 			t.Errorf("claude %q: busy = %v, want %v", st, got, want)
 		}
 	}
+
+	// A configured command runs in the shell's place, so it is in the foreground
+	// for as long as its tab is open.
+	cmd := s.newTab(ws, "sleep 30")
+	if s.busy(cmd.ID) {
+		t.Fatal("a command tab that hasn't started is busy")
+	}
+	if err := s.start(cmd.ID, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	if !s.busy(cmd.ID) {
+		t.Error("a running command tab isn't busy")
+	}
 	_ = s.close("w")
 }
 
@@ -266,6 +279,58 @@ func TestCloseTabEndsItsProcesses(t *testing.T) {
 	if s.isOpen("w") {
 		t.Fatal("still open after its only tab closed")
 	}
+}
+
+func TestHangupKillsWhatIgnoresSIGHUP(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	defer func(g time.Duration) { hangupGrace = g }(hangupGrace)
+	hangupGrace = 100 * time.Millisecond
+	// ignore sets its trap, says <name>-42, then runs loop.
+	ignore := func(name, loop string) string { return `trap "" HUP; echo ` + name + `-$((6*7)); ` + loop }
+	const reads = "while read -r l; do :; done"
+	r := &recorder{}
+	s := newSessions("", r.emit)
+	ws := Workspace{Name: "w", Dir: t.TempDir()}
+	running := func(cmd, name string) (Pane, int) {
+		t.Helper()
+		p := s.newTab(ws, cmd)
+		if err := s.start(p.ID, 80, 24); err != nil {
+			t.Fatal(err)
+		}
+		if name != "" {
+			waitFor(t, name, func() bool { return strings.Contains(r.output(), name+"-42") })
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return p, s.panes[p.ID].cmd.Process.Pid
+	}
+
+	// A tab whose command ignores SIGHUP.
+	tab, pid := running(ignore("tab", reads), "tab")
+	if err := s.closeTab(tab.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the tab's command to be killed", func() bool { return syscall.Kill(pid, 0) != nil })
+
+	// Closing the worktree: such a tab, and a shell whose foreground job ignores
+	// SIGHUP. The shell passes SIGHUP on and exits, leaving the job, which stays
+	// off the tty (macOS revokes it once the shell has gone, ending a read).
+	_, pid = running(ignore("tab2", reads), "tab2")
+	sh, _ := running("", "")
+	atPrompt(t, s, r, sh.ID)
+	s.write(sh.ID, "sh -c '"+ignore("job", "while :; do sleep 1; done")+"'\r")
+	waitFor(t, "the job", func() bool { return strings.Contains(r.output(), "job-42") })
+	s.mu.Lock()
+	job, err := foreground(s.panes[sh.ID].f)
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.close("w"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the tab's command to be killed", func() bool { return syscall.Kill(pid, 0) != nil })
+	waitFor(t, "the shell's job to be killed", func() bool { return syscall.Kill(-job, 0) != nil })
 }
 
 func TestPaneName(t *testing.T) {
