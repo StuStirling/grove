@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import type { main } from '../wailsjs/go/models'
 import * as rm from './removal.ts'
 
-const ws = (name: string) => ({ name, branch: name, dir: '/w/' + name, repo: 'r', repoPath: '/r' }) as main.WorkspaceInfo
+// Rows are keyed by dir; a short one keeps these tests readable.
+const ws = (name: string) => ({ name, branch: name, dir: name, repo: 'r', repoPath: '/r' }) as main.WorkspaceInfo
 const res = (status: string, extra: Partial<main.RemoveResult> = {}) => ({ status, reason: '', detail: '', branchKept: '', branchDetail: '', ...extra }) as main.RemoveResult
 const branch = (kept: string, detail = '') => ({ kept, detail }) as main.BranchResult
 
@@ -140,6 +141,15 @@ test('a removed row goes when a new worktree takes its name', () => {
   assert.equal(rm.sync(rs, []), rs, 'marked once')
   assert.equal(rm.deleting(rs, rs.a).a.gone, true, 'still gone while its branch is deleted')
   assert.deepEqual(rm.sync(rs, [ws('a')]), {}, 'the name is back: a new worktree')
+})
+
+test('same-named worktrees of two repos are separate rows', () => {
+  const [a, b] = ['/a/main', '/b/main'].map((dir) => ({ ...ws('main'), dir }))
+  let rs = rm.result(rm.start({}, a, [a, b]), '/a/main', res('removed', { branchKept: 'unmerged' }), 0)
+  assert.equal(rm.usable(rs['/b/main']), true, "the other repo's is untouched")
+  rs = rm.sync(rs, [b])
+  assert.equal(rs['/a/main'].gone, true, 'gone, though a worktree of that name is still listed')
+  assert.deepEqual(rm.withRemovals([b], rs).map((w) => w.dir), ['/a/main', '/b/main'])
 })
 
 test("a failed removal goes once its worktree has; one in flight is left alone", () => {

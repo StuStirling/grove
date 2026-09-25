@@ -72,10 +72,19 @@ For the Claude Code marks in the sidebar, add the hooks from
 Run `grove` from any worktree of the repo and you get the same window: it is one
 window per repo. Different repos get their own windows and run side by side.
 
+To work across repos in one window, **Add Repository… (⌘O)** picks another repo
+(it needs its own `.grove.toml`) and lists its worktrees under their own heading
+in the sidebar. Each repo keeps its own `panes`, `worktree_root`, `base` and
+`setup`; `terminal` and the font come from the window's own repo. New Worktree
+creates in the selected worktree's repo, with a picker to change it. The window
+remembers added repos and shows them again next launch, and `grove` run in an
+added repo reaches this window. **Remove Repository from Window** takes one out
+again (its worktrees stay on disk).
+
 Opened from Finder, the Dock or Spotlight there is no repo to start in, so grove
 uses the global `~/.config/grove/workspaces.toml` if you have one, and otherwise
-offers **Open Repository… (⌘O)** to pick a repo folder. ⌘O works from any
-window to open (or switch to) another repo's window.
+offers **Open Repository… (⌘O)** to pick a repo folder. **Open Repository in New
+Window…** in the File menu opens (or switches to) another repo's own window.
 
 ## Commands
 
@@ -112,7 +121,7 @@ Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (pl
 | Delete worktree… | ⌘⌫ | Bigger / smaller / actual text | ⌘= / ⌘- / ⌘0 |
 | Reload worktrees | ⌘R | Newline in Claude Code | ⇧↩ |
 | Open in external terminal | ⌘⇧O | Open link | ⌘-click |
-| Open repository (its own window) | ⌘O | Select over a mouse-aware app | ⌥-drag |
+| Add repository to this window | ⌘O | Select over a mouse-aware app | ⌥-drag |
 | | | Keyboard shortcuts | ⌘/ |
 
 While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧O act on the highlighted
@@ -224,6 +233,7 @@ session grove was started from, so `claude` in a pane is a normal session.
 Every grove process for a repo talks to that repo's window over a unix socket
 under your cache dir. That is how `grove`, `grove open`, `grove new` and
 `grove remove` reach a running window, and how `grove state` marks the sidebar.
+A window also serves the sockets of the repos added to it.
 `grove` from a terminal hands off to the window and returns your prompt.
 
 Quitting grove stops every pane, so it asks first while any are running.

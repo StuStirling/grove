@@ -43,7 +43,7 @@ func TestIPC(t *testing.T) {
 	if got.Op != "state" || got.Pane != "p1" || got.State != "idle" {
 		t.Fatalf("handler got %+v", got)
 	}
-	if err := ipcCall(sock, ipcReq{Op: "open", Name: "x"}); err == nil || errors.Is(err, errNotRunning) {
+	if err := ipcCall(sock, ipcReq{Op: "open", Dir: "x"}); err == nil || errors.Is(err, errNotRunning) {
 		t.Fatalf("handler error not relayed: %v", err)
 	}
 	if _, err := ipcServe(sock, func(ipcReq) error { return nil }); err == nil {

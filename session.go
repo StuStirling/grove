@@ -29,8 +29,8 @@ type Pane struct {
 // first Start call, so it is spawned at the size the pane is actually drawn.
 type pane struct {
 	Pane
-	ws    string
-	dir   string
+	ws    string   // workspace name, for GROVE_WORKSPACE
+	dir   string   // worktree dir: the workspace's key
 	setup string   // typed into the pane once it starts (the repo's setup command)
 	f     *os.File // pty master; nil until started
 	cmd   *exec.Cmd
@@ -38,10 +38,11 @@ type pane struct {
 }
 
 // sessions owns every running pane. A workspace is "open" while it has an entry
-// in open; it closes when its last pane exits or on Close.
+// in open; it closes when its last pane exits or on Close. Workspaces are keyed
+// by dir, since two repos in one window can have worktrees of the same name.
 type sessions struct {
 	mu     sync.Mutex
-	open   map[string][]*pane // workspace name -> panes, in the order they opened
+	open   map[string][]*pane // workspace dir -> panes, in the order they opened
 	panes  map[string]*pane   // pane id -> pane
 	nextID int
 	sock   string // exported to panes as GROVE_SOCK, for `grove state`
@@ -64,7 +65,7 @@ func (s *sessions) changed() { s.emit("changed") }
 // returns its panes. setup, when set, is typed into the shell pane on start.
 func (s *sessions) ensure(ws Workspace, setup string) []Pane {
 	s.mu.Lock()
-	if ps, ok := s.open[ws.Name]; ok {
+	if ps, ok := s.open[ws.Dir]; ok {
 		s.mu.Unlock()
 		return publicPanes(ps)
 	}
@@ -79,7 +80,7 @@ func (s *sessions) ensure(ws Workspace, setup string) []Pane {
 	if strings.TrimSpace(setup) != "" {
 		ps[shellPaneIndex(cmds)].setup = setup
 	}
-	s.open[ws.Name] = ps
+	s.open[ws.Dir] = ps
 	s.mu.Unlock()
 	s.changed()
 	return publicPanes(ps)
@@ -98,7 +99,7 @@ func (s *sessions) newPane(ws, dir, cmd string) *pane {
 func (s *sessions) newTab(ws Workspace, cmd string) Pane {
 	s.mu.Lock()
 	p := s.newPane(ws.Name, ws.Dir, cmd)
-	s.open[ws.Name] = append(s.open[ws.Name], p)
+	s.open[ws.Dir] = append(s.open[ws.Dir], p)
 	s.mu.Unlock()
 	s.changed()
 	return p.Pane
@@ -196,7 +197,7 @@ func (s *sessions) drop(p *pane) {
 // with its last pane. Callers hold s.mu.
 func (s *sessions) forget(p *pane) {
 	delete(s.panes, p.ID)
-	ps := s.open[p.ws]
+	ps := s.open[p.dir]
 	for i, q := range ps {
 		if q == p {
 			ps = append(ps[:i:i], ps[i+1:]...)
@@ -204,9 +205,9 @@ func (s *sessions) forget(p *pane) {
 		}
 	}
 	if len(ps) == 0 {
-		delete(s.open, p.ws)
+		delete(s.open, p.dir)
 	} else {
-		s.open[p.ws] = ps
+		s.open[p.dir] = ps
 	}
 }
 
@@ -222,19 +223,20 @@ func (s *sessions) write(id, data string) {
 	}
 }
 
-// close stops every pane of a workspace. The worktree on disk is untouched.
-func (s *sessions) close(ws string) error {
+// close stops every pane of the workspace at dir. The worktree on disk is
+// untouched.
+func (s *sessions) close(dir string) error {
 	s.mu.Lock()
-	ps, ok := s.open[ws]
+	ps, ok := s.open[dir]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("%s is not open", ws)
+		return fmt.Errorf("%s is not open", dir)
 	}
 	for _, p := range ps {
 		delete(s.panes, p.ID)
 		hangup(p)
 	}
-	delete(s.open, ws)
+	delete(s.open, dir)
 	s.mu.Unlock()
 	s.changed()
 	return nil
@@ -379,27 +381,27 @@ func foreground(f *os.File) (int, error) {
 var markRank = map[string]int{"working": 1, "idle": 2, "waiting": 3}
 
 // snapshot returns the open workspaces' panes and each workspace's Claude mark,
-// summarised over its panes.
+// summarised over its panes, by dir.
 func (s *sessions) snapshot() (map[string][]Pane, map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	open := make(map[string][]Pane, len(s.open))
 	claude := map[string]string{}
-	for ws, ps := range s.open {
-		open[ws] = publicPanes(ps)
+	for dir, ps := range s.open {
+		open[dir] = publicPanes(ps)
 		for _, p := range ps {
-			if markRank[p.Claude] > markRank[claude[ws]] {
-				claude[ws] = p.Claude
+			if markRank[p.Claude] > markRank[claude[dir]] {
+				claude[dir] = p.Claude
 			}
 		}
 	}
 	return open, claude
 }
 
-func (s *sessions) isOpen(ws string) bool {
+func (s *sessions) isOpen(dir string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.open[ws]
+	_, ok := s.open[dir]
 	return ok
 }
 

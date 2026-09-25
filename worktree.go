@@ -114,11 +114,15 @@ func workspaceFor(r Repo, path, branch string) Workspace {
 	if r.Prefix != "" {
 		name = r.Prefix + "/" + name
 	}
-	repoName := strings.TrimSpace(r.Prefix)
-	if repoName == "" {
-		repoName = filepath.Base(expandPath(r.Path))
+	return Workspace{Name: name, Dir: path, Panes: r.Panes, Branch: branch, RepoPath: expandPath(r.Path), RepoName: repoName(r)}
+}
+
+// repoName is a repo's display name: its prefix, else its dir's basename.
+func repoName(r Repo) string {
+	if p := strings.TrimSpace(r.Prefix); p != "" {
+		return p
 	}
-	return Workspace{Name: name, Dir: path, Panes: r.Panes, Branch: branch, RepoPath: expandPath(r.Path), RepoName: repoName}
+	return filepath.Base(expandPath(r.Path))
 }
 
 // resolveWorktreeRoot returns the repo path and the worktree root as absolute

@@ -73,6 +73,19 @@ func TestDefaultBase(t *testing.T) {
 // config (signing, hooks), for the removal tests.
 func gitRepo(t *testing.T) string {
 	t.Helper()
+	isolateGit(t)
+	repo := filepath.Join(t.TempDir(), "repo")
+	gitT(t, "", "init", "-q", "--initial-branch=trunk", repo)
+	writeT(t, filepath.Join(repo, "a.txt"), "a")
+	gitT(t, repo, "add", ".")
+	gitT(t, repo, "commit", "-qm", "init")
+	return repo
+}
+
+// isolateGit keeps the test's git commands off the user's git config and any
+// repo a calling git hook points at.
+func isolateGit(t *testing.T) {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -88,12 +101,6 @@ func gitRepo(t *testing.T) string {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
-	repo := filepath.Join(t.TempDir(), "repo")
-	gitT(t, "", "init", "-q", "--initial-branch=trunk", repo)
-	writeT(t, filepath.Join(repo, "a.txt"), "a")
-	gitT(t, repo, "add", ".")
-	gitT(t, repo, "commit", "-qm", "init")
-	return repo
 }
 
 func gitT(t *testing.T, dir string, args ...string) {
@@ -128,7 +135,7 @@ func TestRemoveDirtyThenForce(t *testing.T) {
 	writeT(t, filepath.Join(ws.Dir, "a.txt"), "changed")
 	writeT(t, filepath.Join(ws.Dir, "new.txt"), "new")
 
-	r := a.Remove(ws.Name, false)
+	r := a.Remove(ws.Dir, false)
 	if r.Status != "dirty" || r.Reason != "2 uncommitted changes" {
 		t.Fatalf("dirty removal = %+v", r)
 	}
@@ -140,7 +147,7 @@ func TestRemoveDirtyThenForce(t *testing.T) {
 	}
 
 	// Forced, it goes; the branch has no commits of its own, so it goes too.
-	if r := a.Remove(ws.Name, true); r.Status != "removed" || r.BranchKept != "" {
+	if r := a.Remove(ws.Dir, true); r.Status != "removed" || r.BranchKept != "" {
 		t.Fatalf("forced removal = %+v", r)
 	}
 	if fileExists(ws.Dir) || branchExists(repo, "wip") {
@@ -151,7 +158,7 @@ func TestRemoveDirtyThenForce(t *testing.T) {
 func TestRemoveCleanDeletesMergedBranch(t *testing.T) {
 	repo := gitRepo(t)
 	a, ws := addWorktree(t, repo, "done")
-	if r := a.Remove(ws.Name, false); r.Status != "removed" || r.BranchKept != "" {
+	if r := a.Remove(ws.Dir, false); r.Status != "removed" || r.BranchKept != "" {
 		t.Fatalf("clean removal = %+v", r)
 	}
 	if fileExists(ws.Dir) || branchExists(repo, "done") {
@@ -166,7 +173,7 @@ func TestRemoveKeepsUnmergedBranch(t *testing.T) {
 	gitT(t, ws.Dir, "add", ".")
 	gitT(t, ws.Dir, "commit", "-qm", "work")
 
-	r := a.Remove(ws.Name, false)
+	r := a.Remove(ws.Dir, false)
 	if r.Status != "removed" || r.BranchKept != "unmerged" {
 		t.Fatalf("removal = %+v, want removed with the branch kept unmerged", r)
 	}
@@ -189,7 +196,7 @@ func TestRemoveFailureReason(t *testing.T) {
 	repo := gitRepo(t)
 	// The main worktree can't be removed, even forced.
 	a := &App{ws: []Workspace{{Name: "repo", Dir: repo, RepoPath: repo}}, sess: newSessions("", func(string, ...any) {})}
-	r := a.Remove("repo", true)
+	r := a.Remove(repo, true)
 	if r.Status != "failed" {
 		t.Fatalf("removing the main worktree = %+v", r)
 	}
@@ -207,14 +214,14 @@ func TestRemoveRefusedForAnotherReason(t *testing.T) {
 	repo := gitRepo(t)
 	writeT(t, filepath.Join(repo, "a.txt"), "changed")
 	a := &App{ws: []Workspace{{Name: "repo", Dir: repo, RepoPath: repo}}, sess: newSessions("", func(string, ...any) {})}
-	if r := a.Remove("repo", false); r.Status != "failed" || !strings.Contains(r.Reason, "is a main working tree") {
+	if r := a.Remove(repo, false); r.Status != "failed" || !strings.Contains(r.Reason, "is a main working tree") {
 		t.Errorf("removing the dirty main worktree = %+v", r)
 	}
 
 	a, ws := addWorktree(t, repo, "locked")
 	writeT(t, filepath.Join(ws.Dir, "a.txt"), "changed")
 	gitT(t, repo, "worktree", "lock", ws.Dir)
-	if r := a.Remove(ws.Name, false); r.Status != "failed" || !strings.Contains(r.Reason, "locked working tree") {
+	if r := a.Remove(ws.Dir, false); r.Status != "failed" || !strings.Contains(r.Reason, "locked working tree") {
 		t.Errorf("removing a dirty locked worktree = %+v", r)
 	}
 	if !fileExists(ws.Dir) {
@@ -237,7 +244,7 @@ func TestRemoveWithSubmodules(t *testing.T) {
 		if name == "dirty" {
 			writeT(t, filepath.Join(ws.Dir, "a.txt"), "changed")
 		}
-		if r := a.Remove(ws.Name, false); r.Status != want {
+		if r := a.Remove(ws.Dir, false); r.Status != want {
 			t.Errorf("%s: removal = %+v, want %s", name, r, want)
 		}
 	}

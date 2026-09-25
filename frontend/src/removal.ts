@@ -16,13 +16,14 @@ type State =
 
 // The worktree and the rows above it are kept so its row stays put after a
 // reload drops the worktree, until the row is dismissed or collapses. gone: a
-// shown snapshot no longer lists the worktree.
+// shown snapshot no longer lists the worktree. Rows are keyed by the worktree's
+// dir, as two repos can have worktrees of the same name.
 export type Removal = State & { ws: main.WorkspaceInfo; above: string[]; gone: boolean }
 export type Removals = Record<string, Removal>
 
-const put = (rs: Removals, r: Removal, s: State): Removals => ({ ...rs, [r.ws.name]: { ws: r.ws, above: r.above, gone: r.gone, ...s } })
-const drop = (rs: Removals, name: string): Removals => {
-  const { [name]: _, ...rest } = rs
+const put = (rs: Removals, r: Removal, s: State): Removals => ({ ...rs, [r.ws.dir]: { ws: r.ws, above: r.above, gone: r.gone, ...s } })
+const drop = (rs: Removals, dir: string): Removals => {
+  const { [dir]: _, ...rest } = rs
   return rest
 }
 const done = (now: number): State => ({ kind: 'done', until: now + DONE_MS, collapsing: false })
@@ -32,48 +33,48 @@ const kept = (reason: string, detail: string, now: number): State => ({ kind: 'k
 // or one that failed.
 export const usable = (r?: Removal) => !r || r.kind === 'failed'
 
-// start begins removing a worktree shown in listed. Its row remembers the names
+// start begins removing a worktree shown in listed. Its row remembers the rows
 // above it there; a retried removal keeps the place it had.
 export function start(rs: Removals, ws: main.WorkspaceInfo, listed: main.WorkspaceInfo[]): Removals {
-  const above = rs[ws.name]?.above ?? listed.slice(0, Math.max(0, listed.findIndex((w) => w.name === ws.name))).map((w) => w.name)
-  return { ...rs, [ws.name]: { ws, above, gone: false, kind: 'removing' } }
+  const above = rs[ws.dir]?.above ?? listed.slice(0, Math.max(0, listed.findIndex((w) => w.dir === ws.dir))).map((w) => w.dir)
+  return { ...rs, [ws.dir]: { ws, above, gone: false, kind: 'removing' } }
 }
 
 // result applies Remove's answer. A row that is no longer removing (dismissed)
 // ignores it.
-export function result(rs: Removals, name: string, res: main.RemoveResult, now: number): Removals {
-  const r = rs[name]
+export function result(rs: Removals, dir: string, res: main.RemoveResult, now: number): Removals {
+  const r = rs[dir]
   if (r?.kind !== 'removing') return rs
   if (res.status === 'removed') return put(rs, r, res.branchKept ? kept(res.branchKept, res.branchDetail, now) : done(now))
   return put(rs, r, { kind: 'failed', reason: res.reason, detail: res.detail, dirty: res.status === 'dirty' })
 }
 
-export const force = (rs: Removals, name: string): Removals => (rs[name]?.kind === 'failed' ? put(rs, rs[name], { kind: 'removing' }) : rs)
+export const force = (rs: Removals, dir: string): Removals => (rs[dir]?.kind === 'failed' ? put(rs, rs[dir], { kind: 'removing' }) : rs)
 
 // keep gives up on a failed removal: the worktree is still there, so its row goes
 // back to normal.
-export const keep = (rs: Removals, name: string): Removals => (rs[name]?.kind === 'failed' ? drop(rs, name) : rs)
+export const keep = (rs: Removals, dir: string): Removals => (rs[dir]?.kind === 'failed' ? drop(rs, dir) : rs)
 
-export const dismiss = (rs: Removals, name: string): Removals => (rs[name]?.kind === 'kept' ? drop(rs, name) : rs)
+export const dismiss = (rs: Removals, dir: string): Removals => (rs[dir]?.kind === 'kept' ? drop(rs, dir) : rs)
 
 // deleting starts Delete branch. It takes the entry the button belonged to, so a
 // row whose timer ran out while the confirm dialog was up comes back to report.
 export function deleting(rs: Removals, r: Removal): Removals {
-  const cur = rs[r.ws.name] ?? r
+  const cur = rs[r.ws.dir] ?? r
   return cur.kind === 'kept' ? put(rs, cur, { kind: 'deleting' }) : rs
 }
 
 // branchResult applies DeleteBranch's answer: kept "" = deleted, else why it was kept.
-export function branchResult(rs: Removals, name: string, res: main.BranchResult, now: number): Removals {
-  const r = rs[name]
+export function branchResult(rs: Removals, dir: string, res: main.BranchResult, now: number): Removals {
+  const r = rs[dir]
   if (r?.kind !== 'deleting') return rs
   return put(rs, r, res.kept ? kept(res.kept, res.detail, now) : done(now))
 }
 
 // hold pauses a kept row's timer while it is hovered or focused, and resumes it
 // with the time that was left.
-export function hold(rs: Removals, name: string, held: boolean, now: number): Removals {
-  const r = rs[name]
+export function hold(rs: Removals, dir: string, held: boolean, now: number): Removals {
+  const r = rs[dir]
   if (r?.kind !== 'kept' || held === (r.since === null)) return rs
   const left = r.since === null ? r.left : r.left - (now - r.since)
   return put(rs, r, { kind: 'kept', reason: r.reason, detail: r.detail, left, since: held ? null : now })
@@ -98,23 +99,23 @@ export function tick(rs: Removals, now: number): Removals {
     const d = deadline(r)
     if (d === null || d > now) continue
     if (r.kind === 'done' && !r.collapsing) out = put(out, r, { kind: 'done', until: now + COLLAPSE_MS, collapsing: true })
-    else out = drop(out, r.ws.name)
+    else out = drop(out, r.ws.dir)
   }
   return out
 }
 
 // sync applies a snapshot now on screen. A removed row whose worktree it lacks
-// is marked gone; a later snapshot listing that name again means a new worktree,
+// is marked gone; a later snapshot listing that dir again means a new worktree,
 // so the row goes rather than lend it its state. (A snapshot from before the
 // reload lists the old worktree, but can't drop an unmarked row.) A failed
 // removal whose worktree went some other way goes too: its goal was reached.
 export function sync(rs: Removals, list: main.WorkspaceInfo[]): Removals {
-  const have = new Set(list.map((w) => w.name))
+  const have = new Set(list.map((w) => w.dir))
   let out = rs
   for (const r of Object.values(rs)) {
-    const here = have.has(r.ws.name)
-    if ((here && r.gone) || (!here && r.kind === 'failed')) out = drop(out, r.ws.name)
-    else if (!here && !r.gone && r.kind !== 'removing') out = { ...out, [r.ws.name]: { ...r, gone: true } }
+    const here = have.has(r.ws.dir)
+    if ((here && r.gone) || (!here && r.kind === 'failed')) out = drop(out, r.ws.dir)
+    else if (!here && !r.gone && r.kind !== 'removing') out = { ...out, [r.ws.dir]: { ...r, gone: true } }
   }
   return out
 }
@@ -124,13 +125,13 @@ export function sync(rs: Removals, list: main.WorkspaceInfo[]): Removals {
 // such row), else at the top.
 export function withRemovals(list: main.WorkspaceInfo[], rs: Removals): main.WorkspaceInfo[] {
   const out = [...list]
-  const have = new Set(list.map((w) => w.name))
+  const have = new Set(list.map((w) => w.dir))
   for (const r of Object.values(rs)) {
-    if (have.has(r.ws.name)) continue
+    if (have.has(r.ws.dir)) continue
     const above = new Set(r.above)
     let at = 0
     out.forEach((w, i) => {
-      if (above.has(w.name)) at = i + 1
+      if (above.has(w.dir)) at = i + 1
     })
     out.splice(at, 0, r.ws)
   }

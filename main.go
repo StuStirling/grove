@@ -81,7 +81,7 @@ func main() {
 		ws, err := createWorktree(cfg.Repo[0], args[1], args[2], base)
 		fail(err)
 		fmt.Printf("created %s at %s (branch %s)\n", ws.Name, ws.Dir, ws.Branch)
-		fail(showInGUI(cfg, ws.Name, true))
+		fail(showInGUI(cfg, ws.Dir, true))
 	case "remove":
 		removeCmd(args[1:])
 	case "state":
@@ -133,7 +133,7 @@ func openCmd(args []string) {
 		fail(openInTerminal(*found, cfg.Terminal))
 		return
 	}
-	fail(showInGUI(cfg, found.Name, false))
+	fail(showInGUI(cfg, found.Dir, false))
 }
 
 // findWorkspace returns the resolved workspace with the given name, or nil.
@@ -183,7 +183,7 @@ func removeCmd(args []string) {
 		fail(err)
 	}
 	// Stop its panes if the grove window has it open; absence is fine.
-	_ = ipcCall(cfg.socketPath(), ipcReq{Op: "close", Name: found.Name})
+	_ = ipcCall(cfg.socketPath(), ipcReq{Op: "close", Dir: found.Dir})
 
 	if delBranch {
 		switch err := removeBranch(found.RepoPath, found.Branch, false); {

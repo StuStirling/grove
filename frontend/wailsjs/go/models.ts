@@ -54,6 +54,22 @@ export namespace main {
 	        this.branchDetail = source["branchDetail"];
 	    }
 	}
+	export class RepoInfo {
+	    name: string;
+	    path: string;
+	    added: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new RepoInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.added = source["added"];
+	    }
+	}
 	export class ShortcutInfo {
 	    group: string;
 	    label: string;
@@ -117,6 +133,7 @@ export namespace main {
 	export class Snapshot {
 	    error: string;
 	    workspaces: WorkspaceInfo[];
+	    repos: RepoInfo[];
 	    canCreate: boolean;
 	    terminal: boolean;
 	    fontFamily: string;
@@ -132,6 +149,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.error = source["error"];
 	        this.workspaces = this.convertValues(source["workspaces"], WorkspaceInfo);
+	        this.repos = this.convertValues(source["repos"], RepoInfo);
 	        this.canCreate = source["canCreate"];
 	        this.terminal = source["terminal"];
 	        this.fontFamily = source["fontFamily"];

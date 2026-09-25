@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import type { main } from '../wailsjs/go/models'
 import { ClipboardSetText } from '../wailsjs/runtime/runtime'
 import { Menu } from './Menu'
@@ -14,6 +14,7 @@ const MAX_WIDTH = 480
 export const sidebarWidth = (w: number) => Math.round(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, innerWidth / 2, w)))
 
 // Sidebar is the worktree list: a filter box (⌘P) over one row per worktree.
+// Worktrees are keyed by dir: two repos in one window can share worktree names.
 export function Sidebar(props: {
   snap: main.Snapshot | null
   all: main.WorkspaceInfo[]
@@ -27,14 +28,15 @@ export function Sidebar(props: {
   onFilterFocus: () => void
   onFilterBlur: () => void
   onFilterKey: (e: React.KeyboardEvent) => void
-  onOpen: (name: string) => void
+  onOpen: (dir: string) => void
   removals: rm.Removals
   onRemoval: (r: rm.Removal, action: RemovalAction) => void
-  onHold: (name: string, held: boolean) => void
+  onHold: (dir: string, held: boolean) => void
   width: number
   onResize: (width: number) => void
 }) {
   const { snap, all, filtered, selected, cursor, listFocused, filter, filterRef, removals } = props
+  const repos = snap?.repos ?? []
   const listRef = useRef<HTMLUListElement>(null)
   const [menu, setMenu] = useState<{ ws: main.WorkspaceInfo; at: { x: number; y: number } } | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -78,87 +80,95 @@ export function Sidebar(props: {
       />
       <ul className="list" ref={listRef}>
         {filtered.map((w, i) => {
-          const r = removals[w.name]
+          const r = removals[w.dir]
           const n = all.indexOf(w)
           // A kept branch's row waits while it is hovered or focused.
           const hold = r?.kind === 'kept' ? {
-            onMouseOver: () => props.onHold(w.name, true),
-            onMouseLeave: (e: React.MouseEvent<HTMLElement>) => props.onHold(w.name, e.currentTarget.contains(document.activeElement)),
-            onFocus: () => props.onHold(w.name, true),
+            onMouseOver: () => props.onHold(w.dir, true),
+            onMouseLeave: (e: React.MouseEvent<HTMLElement>) => props.onHold(w.dir, e.currentTarget.contains(document.activeElement)),
+            onFocus: () => props.onHold(w.dir, true),
             onBlur: (e: React.FocusEvent<HTMLElement>) =>
-              props.onHold(w.name, e.currentTarget.matches(':hover') || e.currentTarget.contains(e.relatedTarget as Node | null)),
+              props.onHold(w.dir, e.currentTarget.matches(':hover') || e.currentTarget.contains(e.relatedTarget as Node | null)),
           } : {}
           const cls = [
-            w.name === selected && 'sel',
+            w.dir === selected && 'sel',
             listFocused && i === cursor && 'cursor',
             r && 'rm-' + r.kind,
             r?.kind === 'done' && r.collapsing && 'collapsing',
           ]
           return (
-            <li
-              key={w.name}
-              className={cls.filter(Boolean).join(' ')}
-              aria-busy={r?.kind === 'removing' || r?.kind === 'deleting' || undefined}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => rm.usable(r) && props.onOpen(w.name)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                setMenu({ ws: w, at: { x: e.clientX, y: e.clientY } })
-              }}
-              title={w.dir}
-              {...hold}
-            >
-              <span className="gutter">
-                {r && !rm.usable(r) ? (
-                  <RemovalMark r={r} />
-                ) : (
-                  <>
-                    <Status w={w} active={w.name === selected} />
-                    <Claude state={w.claude} />
-                  </>
-                )}
-              </span>
-              <span className="text">
-                <span className="name">{w.name}</span>
-                {w.branch && <span className="branch">{w.branch}</span>}
-                {r?.kind === 'removing' && <span className="rm-line busy">Removing worktree…</span>}
-                {r?.kind === 'deleting' && <span className="rm-line busy">Deleting branch…</span>}
-                {r?.kind === 'done' && <span className="rm-line">Removed.</span>}
-                {r?.kind === 'kept' && (
-                  <>
-                    <span className="rm-line" title={r.detail || undefined}>
-                      {r.reason === 'unmerged' ? 'Removed. Branch kept (unmerged).' : `Removed. Branch kept: ${r.reason}`}
-                    </span>
-                    <span className="rm-actions">
-                      <button onClick={act(r, 'delete-branch')} aria-label={`Delete branch ${w.branch} of ${w.name}`}>
-                        Delete branch
-                      </button>
-                      <button onClick={act(r, 'dismiss')} aria-label={`Dismiss ${w.name}`}>
-                        Dismiss
-                      </button>
-                    </span>
-                  </>
-                )}
-                {r?.kind === 'failed' && (
-                  <>
-                    <span className="rm-line err" title={r.detail}>
-                      Couldn't remove: {r.reason}
-                    </span>
-                    <span className="rm-actions">
-                      {r.dirty && (
-                        <button onClick={act(r, 'force')} aria-label={`Force remove ${w.name}`}>
-                          Force remove
+            <Fragment key={w.dir}>
+              {/* A heading per repo once the window shows more than one. */}
+              {repos.length > 1 && w.repoPath !== filtered[i - 1]?.repoPath && (
+                <li className="group">
+                  {w.repo || 'other'}
+                  {repos.find((p) => p.path === w.repoPath)?.added && <span>added</span>}
+                </li>
+              )}
+              <li
+                className={cls.filter(Boolean).join(' ')}
+                aria-busy={r?.kind === 'removing' || r?.kind === 'deleting' || undefined}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => rm.usable(r) && props.onOpen(w.dir)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setMenu({ ws: w, at: { x: e.clientX, y: e.clientY } })
+                }}
+                title={w.dir}
+                {...hold}
+              >
+                <span className="gutter">
+                  {r && !rm.usable(r) ? (
+                    <RemovalMark r={r} />
+                  ) : (
+                    <>
+                      <Status w={w} active={w.dir === selected} />
+                      <Claude state={w.claude} />
+                    </>
+                  )}
+                </span>
+                <span className="text">
+                  <span className="name">{w.name}</span>
+                  {w.branch && <span className="branch">{w.branch}</span>}
+                  {r?.kind === 'removing' && <span className="rm-line busy">Removing worktree…</span>}
+                  {r?.kind === 'deleting' && <span className="rm-line busy">Deleting branch…</span>}
+                  {r?.kind === 'done' && <span className="rm-line">Removed.</span>}
+                  {r?.kind === 'kept' && (
+                    <>
+                      <span className="rm-line" title={r.detail || undefined}>
+                        {r.reason === 'unmerged' ? 'Removed. Branch kept (unmerged).' : `Removed. Branch kept: ${r.reason}`}
+                      </span>
+                      <span className="rm-actions">
+                        <button onClick={act(r, 'delete-branch')} aria-label={`Delete branch ${w.branch} of ${w.name}`}>
+                          Delete branch
                         </button>
-                      )}
-                      <button onClick={act(r, 'keep')} aria-label={`Keep worktree ${w.name}`}>
-                        Keep
-                      </button>
-                    </span>
-                  </>
-                )}
-              </span>
-              {rm.usable(r) && n >= 0 && n < 9 && <span className="num">{key(snap, 'Worktree 1–9').replace('1–9', String(n + 1))}</span>}
-            </li>
+                        <button onClick={act(r, 'dismiss')} aria-label={`Dismiss ${w.name}`}>
+                          Dismiss
+                        </button>
+                      </span>
+                    </>
+                  )}
+                  {r?.kind === 'failed' && (
+                    <>
+                      <span className="rm-line err" title={r.detail}>
+                        Couldn't remove: {r.reason}
+                      </span>
+                      <span className="rm-actions">
+                        {r.dirty && (
+                          <button onClick={act(r, 'force')} aria-label={`Force remove ${w.name}`}>
+                            Force remove
+                          </button>
+                        )}
+                        <button onClick={act(r, 'keep')} aria-label={`Keep worktree ${w.name}`}>
+                          Keep
+                        </button>
+                      </span>
+                    </>
+                  )}
+                </span>
+                {rm.usable(r) && n >= 0 && n < 9 && <span className="num">{key(snap, 'Worktree 1–9').replace('1–9', String(n + 1))}</span>}
+              </li>
+            </Fragment>
           )
         })}
         {filtered.length === 0 && <li className="empty">{all.length ? 'no match' : 'no worktrees'}</li>}

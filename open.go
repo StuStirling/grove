@@ -12,25 +12,25 @@ import (
 	"time"
 )
 
-// showInGUI brings the repo's grove window forward, optionally opening a
-// workspace in it (setup: a fresh worktree whose setup command should run). It
-// launches the GUI when none is running.
-func showInGUI(cfg *Config, name string, setup bool) error {
-	req := ipcReq{Op: "focus", Name: name, Setup: setup}
-	if name != "" {
+// showInGUI brings the repo's grove window forward, optionally opening the
+// workspace at wsDir in it (setup: a fresh worktree whose setup command should
+// run). It launches the GUI when none is running.
+func showInGUI(cfg *Config, wsDir string, setup bool) error {
+	req := ipcReq{Op: "focus", Dir: wsDir, Setup: setup}
+	if wsDir != "" {
 		req.Op = "open"
 	}
 	err := ipcCall(cfg.socketPath(), req)
 	if !errors.Is(err, errNotRunning) {
 		return err
 	}
-	return spawnGUI("", name, setup)
+	return spawnGUI("", wsDir, setup)
 }
 
 // spawnGUI starts `grove gui` in dir ("" = this process's cwd), detached from
 // this terminal like `code .`: the shell gets its prompt back and the window
 // outlives the tab. It inherits this env, so it resolves the same PATH, and
-// the config of the repo it starts in.
+// the config of the repo it starts in. name selects a workspace (name or dir).
 func spawnGUI(dir, name string, setup bool) error {
 	exe, err := groveExe()
 	if err != nil {
