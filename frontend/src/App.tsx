@@ -3,13 +3,14 @@ import * as api from '../wailsjs/go/main/App'
 import { EventsOn, WindowSetTitle } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
 import { WorkspaceView, terms } from './Panes'
+import { Sidebar } from './Sidebar'
+import { errText, key } from './util'
 
 type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; resolve: (yes: boolean) => void }
 type Modal = { kind: 'new' } | { kind: 'checkout' } | { kind: 'help' } | Confirm
 
 const FONT_KEY = 'grove.fontDelta'
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace'
-const errText = (e: unknown) => String((e as Error)?.message ?? e)
 
 // Focus a pane's terminal, waiting a few frames for it to mount and for a
 // closing dialog to unmount. A dialog that stays open keeps focus.
@@ -345,56 +346,27 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          grove<span>{all[0]?.repo}</span>
-        </div>
-        <input
-          ref={filterRef}
-          className="filter"
-          placeholder={`Go to worktree  ${key(snap, 'Go to Worktree')}`}
-          value={filter}
-          spellCheck={false}
-          onChange={(e) => {
-            setFilter(e.target.value)
-            setCursor(0)
-          }}
-          onFocus={() => {
-            setListFocused(true)
-            setCursor(Math.max(0, filtered.findIndex((w) => w.name === selected)))
-          }}
-          onBlur={() => setListFocused(false)}
-          onKeyDown={onFilterKey}
-        />
-        <ul className="list">
-          {filtered.map((w, i) => (
-            <li
-              key={w.name}
-              className={(w.name === selected ? 'sel ' : '') + (listFocused && i === cursor ? 'cursor' : '')}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => openWs(w.name)}
-              title={w.dir}
-            >
-              <span className="gutter">
-                <Status w={w} active={w.name === selected} />
-                <Claude state={w.claude} />
-              </span>
-              <span className="text">
-                <span className="name">{w.name}</span>
-                {w.branch && <span className="branch">{w.branch}</span>}
-              </span>
-              {all.indexOf(w) < 9 && <span className="num">{key(snap, 'Worktree 1–9').replace('1–9', String(all.indexOf(w) + 1))}</span>}
-            </li>
-          ))}
-          {filtered.length === 0 && <li className="empty">{all.length ? 'no match' : 'no worktrees'}</li>}
-        </ul>
-        <div className="legend">
-          <span><i className="st-active">●</i> active</span>
-          <span><i className="st-open">○</i> open</span>
-          <span><i className="cl-waiting">◆</i><i className="cl-idle">◆</i> claude wants you</span>
-          <span><i className="cl-working">◌</i> busy</span>
-        </div>
-      </aside>
+      <Sidebar
+        snap={snap}
+        all={all}
+        filtered={filtered}
+        selected={selected}
+        cursor={cursor}
+        listFocused={listFocused}
+        filter={filter}
+        filterRef={filterRef}
+        onFilterChange={(v) => {
+          setFilter(v)
+          setCursor(0)
+        }}
+        onFilterFocus={() => {
+          setListFocused(true)
+          setCursor(Math.max(0, filtered.findIndex((w) => w.name === selected)))
+        }}
+        onFilterBlur={() => setListFocused(false)}
+        onFilterKey={onFilterKey}
+        onOpen={openWs}
+      />
 
       <main className="main">
         {openList.map((w) => (
@@ -478,28 +450,6 @@ const keepFocus = (e: React.FocusEvent<HTMLElement>) => {
   requestAnimationFrame(() => {
     if (el.isConnected && !el.contains(document.activeElement)) (el.querySelector('input') ?? el).focus()
   })
-}
-
-// key returns a shortcut's label (e.g. "⌘P") from the backend's table.
-function key(snap: main.Snapshot | null, label: string) {
-  return snap?.shortcuts?.find((s) => s.label === label)?.keys ?? ''
-}
-
-function Status({ w, active }: { w: main.WorkspaceInfo; active: boolean }) {
-  if (!w.open) return <i> </i>
-  return active ? <i className="st-active" title="active">●</i> : <i className="st-open" title="open, running in the background">○</i>
-}
-
-function Claude({ state }: { state: string }) {
-  switch (state) {
-    case 'waiting':
-      return <i className="cl-waiting" title="Claude is waiting for permission">◆</i>
-    case 'idle':
-      return <i className="cl-idle" title="Claude finished: your turn">◆</i>
-    case 'working':
-      return <i className="cl-working" title="Claude is working">◌</i>
-  }
-  return <i> </i>
 }
 
 function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
