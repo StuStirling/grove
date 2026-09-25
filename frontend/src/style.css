@@ -1,5 +1,6 @@
 :root {
   --bg: #0e1116;
+  --pane-dim: #0a0c10; /* the unfocused pane of a split */
   --surface: #151a21;
   --surface-2: #1c222b;
   --border: #262d37;
@@ -33,7 +34,7 @@ button kbd { margin-left: 6px; background: transparent; }
 .app { display: grid; grid-template-columns: var(--sidebar) 1fr; grid-template-rows: 1fr auto; height: 100%; }
 
 /* ---- sidebar ---- */
-.sidebar { grid-row: 1; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); min-height: 0; }
+.sidebar { grid-row: 1; position: relative; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); min-height: 0; }
 .brand { padding: 12px 14px 8px; font-weight: 700; color: var(--idle); letter-spacing: 0.02em; }
 .brand span { margin-left: 8px; font-weight: 500; color: var(--muted); }
 .filter { margin: 0 10px 8px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px; font: inherit; }
@@ -50,6 +51,9 @@ button kbd { margin-left: 6px; background: transparent; }
 .gutter i { width: 12px; text-align: center; font-style: normal; }
 .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .name, .branch { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The open worktree, and a hovered row, show their whole name and branch. */
+.list li.sel .name, .list li.sel .branch,
+.list li:not(.rm-done):hover .name, .list li:not(.rm-done):hover .branch { white-space: normal; overflow-wrap: anywhere; }
 .branch { color: var(--dim); font-size: 12px; }
 .num { flex: none; color: var(--dim); font-size: 11px; padding-top: 1px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 10px 14px; border-top: 1px solid var(--border); color: var(--dim); font-size: 11px; }
@@ -59,27 +63,69 @@ button kbd { margin-left: 6px; background: transparent; }
 .cl-waiting { color: var(--waiting); font-weight: 700; }
 .cl-idle { color: var(--idle); font-weight: 700; }
 .cl-working { color: var(--dim); }
+/* Drag, or ←→ while focused, to resize the sidebar. */
+.sidebar-resize { position: absolute; top: 0; bottom: 0; right: -3px; width: 6px; z-index: 3; cursor: col-resize; }
+.sidebar-resize:hover, .sidebar-resize:focus-visible, .sidebar-resize.dragging { background: linear-gradient(var(--accent), var(--accent)) center / 2px 100% no-repeat; outline: none; }
+/* Removal status, shown in the worktree's own row. */
+.gutter .spinner { margin: 3px 1px 0; }
+.rm-line { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.rm-line.busy { color: var(--waiting); }
+.rm-line.err { color: var(--danger); }
+.rm-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.rm-actions button { padding: 1px 8px; font-size: 12px; border-radius: 5px; }
+.list li.rm-removing, .list li.rm-deleting, .list li.rm-done, .list li.rm-kept { cursor: default; }
+.list li.rm-removing .name, .list li.rm-removing .branch { opacity: 0.5; }
+.list li.rm-done .name, .list li.rm-kept .name, .list li.rm-deleting .name { text-decoration: line-through; color: var(--muted); }
+.list li.rm-failed, .list li.rm-failed:hover { background: rgba(248, 81, 73, 0.12); } /* --danger, translucent */
+/* ~3 lines, then to nothing over COLLAPSE_MS (removal.ts). */
+.list li.rm-done { max-height: 70px; overflow: hidden; transition: max-height 0.2s ease, opacity 0.2s ease, padding 0.2s ease; }
+.list li.rm-done.collapsing { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; }
 
 /* ---- panes ---- */
 .main { grid-row: 1; position: relative; min-width: 0; min-height: 0; }
-.workspace { position: absolute; inset: 0; display: flex; padding: 4px; gap: 0; }
+/* A worktree is a grid: its header, then tab bars, then bodies, and when split,
+   columns left | divider | right. Every terminal is placed in its pane's body
+   cell, stacked with its pane's other tabs. */
+.workspace { position: absolute; inset: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+.ws-head { grid-row: 1; grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.ws-name { min-width: 0; font-weight: 600; color: var(--text); }
+.ws-branch { min-width: 0; font: 12px ui-monospace, Menlo, monospace; color: var(--dim); }
+.placeholder .ws-head { position: absolute; inset: 0 0 auto; }
 /* Background workspaces stay laid out (so their panes keep their size) but unseen. */
 .workspace.hidden, .workspace.hidden * { visibility: hidden !important; }
-.col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.col-right { flex: 1; }
-.pane { flex: 1; min-height: 0; min-width: 0; border: 1px solid var(--border); border-radius: 4px; padding: 4px 2px 2px 6px; background: var(--bg); }
-.pane.focused { border-color: var(--accent); }
-.workspace.has-zoom .pane:not(.zoomed) { visibility: hidden; }
-.pane.zoomed { position: absolute; inset: 4px; z-index: 2; }
+.tabbar { grid-row: -3; display: flex; align-items: stretch; min-width: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.tabs { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tab { flex: none; display: flex; align-items: center; border-top: 2px solid transparent; border-right: 1px solid var(--border); color: var(--muted); }
+.tab.active { background: var(--bg); color: var(--text); }
+.tab.current { border-top-color: var(--accent); }
+.tab button, .tabbar .tool { background: transparent; border: 0; border-radius: 0; color: inherit; }
+.tab [role='tab'] { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; white-space: nowrap; }
+.tab-icon { font-style: normal; }
+.tab-icon.claude { color: var(--idle); }
+.tab-icon.shell { color: var(--muted); font: 11px ui-monospace, Menlo, monospace; }
+.tab .tab-x { padding: 4px 8px 4px 4px; color: var(--dim); }
+.tabbar .tool { flex: none; padding: 4px 10px; color: var(--muted); }
+.tab .tab-x:hover, .tabbar .tool:hover { color: var(--text); }
+.tabbar .tools { display: flex; margin-left: auto; }
+.pane { grid-row: -2; min-height: 0; min-width: 0; padding: 4px 2px 2px 6px; background: var(--bg); }
+.tabbar.dim { background: var(--bg); }
+.tabbar.dim .tab.active, .pane.dim { background: var(--pane-dim); }
+.divider { grid-row: -3 / -1; grid-column: 2; cursor: col-resize; background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat; }
+.divider:hover { background: var(--border-strong); }
+.divider:focus-visible { background: var(--accent); outline: none; }
 .term { width: 100%; height: 100%; }
 .term .xterm { height: 100%; }
 .term .xterm-viewport { background: transparent !important; }
-.split { flex: none; background: transparent; }
-.split-v { width: 5px; cursor: col-resize; }
-.split-h { height: 5px; cursor: row-resize; }
-.split:hover { background: var(--border-strong); }
 .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .placeholder .hint { color: var(--dim); }
+.placeholder .actions { display: flex; gap: 8px; }
+
+/* ---- popup menus ---- */
+.menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 190px; padding: 4px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.menu button { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 5px 10px; background: transparent; border: 0; border-radius: 5px; text-align: left; }
+.menu button.danger { color: var(--danger); background: transparent; }
+.menu button:hover, .menu button:focus { background: var(--surface-2); outline: none; }
+.menu-divider { height: 1px; margin: 4px 2px; background: var(--border); }
 
 /* ---- status bar ---- */
 .status { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 16px; padding: 4px 12px; border-top: 1px solid var(--border); background: var(--surface); color: var(--dim); font-size: 12px; min-height: 24px; }

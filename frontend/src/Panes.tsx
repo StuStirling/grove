@@ -7,6 +7,9 @@ import '@xterm/xterm/css/xterm.css'
 import { OpenURL, Size, Write } from '../wailsjs/go/main/App'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
+import { activate, closePane, moveToOther, place, type Layout } from './layout'
+import { Menu } from './Menu'
+import { key, startDrag } from './util'
 
 // Live xterm instances by pane id, so the app can move focus between panes.
 export const terms = new Map<string, Terminal>()
@@ -30,8 +33,8 @@ function decode(b64: string): Uint8Array {
 type Font = { family: string; size: number }
 
 // TermPane is one xterm bound to a backend pane. Its first Size call starts the
-// pane's process at the drawn size.
-function TermPane({ pane, font, onFocus }: { pane: main.Pane; font: Font; onFocus: () => void }) {
+// pane's process at the drawn size. dim darkens it while its pane is unfocused.
+function TermPane({ pane, font, dim, onFocus }: { pane: main.Pane; font: Font; dim: boolean; onFocus: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const fitRef = useRef<() => void>(() => {})
   const focusRef = useRef(onFocus)
@@ -67,13 +70,17 @@ function TermPane({ pane, font, onFocus }: { pane: main.Pane; font: Font; onFocu
     term.textarea?.addEventListener('focus', focus)
 
     let last = ''
+    let sized = Promise.resolve()
     fitRef.current = () => {
       if (el.clientWidth === 0 || el.clientHeight === 0) return
       fit.fit()
       const key = `${term.cols}x${term.rows}`
       if (key !== last) {
         last = key
-        Size(pane.id, term.cols, term.rows).catch(() => {})
+        // One at a time: each Wails call runs on its own goroutine, so a drag's
+        // sizes could otherwise land out of order.
+        const [cols, rows] = [term.cols, term.rows]
+        sized = sized.then(() => Size(pane.id, cols, rows)).catch(() => {})
       }
     }
     const ro = new ResizeObserver(() => fitRef.current())
@@ -99,103 +106,244 @@ function TermPane({ pane, font, onFocus }: { pane: main.Pane; font: Font; onFocu
     fitRef.current()
   }, [font.family, font.size, pane.id])
 
+  // xterm paints its own background, so the pane's CSS background alone wouldn't
+  // show through.
+  useEffect(() => {
+    const term = terms.get(pane.id)
+    if (!term) return
+    const background = dim ? getComputedStyle(document.documentElement).getPropertyValue('--pane-dim').trim() : theme.background
+    term.options.theme = { ...theme, background }
+  }, [dim, pane.id])
+
   return <div className="term" ref={ref} />
 }
 
-// Layout: the first pane is the big left column; the rest stack in a right
-// column. Splitters are draggable.
-export function WorkspaceView(props: {
-  ws: main.WorkspaceInfo
-  visible: boolean
-  focused: number
-  zoomed: number | null
-  font: Font
-  onFocus: (i: number) => void
-}) {
-  const { ws, visible, focused, zoomed, font, onFocus } = props
-  const panes = ws.panes ?? []
-  const [left, setLeft] = useState(60) // % width of the big pane
-  const [weights, setWeights] = useState<number[]>([])
-  const rootRef = useRef<HTMLDivElement>(null)
-  const colRef = useRef<HTMLDivElement>(null)
-
-  const right = panes.slice(1)
-  const w = weights.length === right.length ? weights : right.map(() => 1 / right.length)
-
-  const drag = (e: React.PointerEvent, move: (ev: PointerEvent) => void) => {
-    e.preventDefault()
-    const target = e.currentTarget as HTMLElement
-    target.setPointerCapture(e.pointerId)
-    document.body.classList.add('dragging')
-    const up = () => {
-      target.removeEventListener('pointermove', move)
-      target.removeEventListener('pointerup', up)
-      document.body.classList.remove('dragging')
-    }
-    target.addEventListener('pointermove', move)
-    target.addEventListener('pointerup', up)
-  }
-
-  const dragLeft = (e: React.PointerEvent) =>
-    drag(e, (ev) => {
-      const r = rootRef.current!.getBoundingClientRect()
-      setLeft(Math.min(85, Math.max(15, ((ev.clientX - r.left) / r.width) * 100)))
-    })
-
-  // Divider i sits between right panes i and i+1.
-  const dragRight = (i: number) => (e: React.PointerEvent) =>
-    drag(e, (ev) => {
-      const r = colRef.current!.getBoundingClientRect()
-      const y = (ev.clientY - r.top) / r.height
-      const start = w.slice(0, i).reduce((a, b) => a + b, 0)
-      const span = w[i] + w[i + 1]
-      const min = Math.min(0.08, span / 2)
-      const a = Math.min(span - min, Math.max(min, y - start))
-      const next = [...w]
-      next[i] = a
-      next[i + 1] = span - a
-      setWeights(next)
-    })
-
-  const cell = (p: main.Pane, i: number) => (
-    <div
-      key={p.id}
-      className={'pane' + (i === focused ? ' focused' : '') + (zoomed === i ? ' zoomed' : '')}
-      style={i > 0 ? { flex: w[i - 1] } : undefined}
-      onMouseDown={() => onFocus(i)}
-    >
-      <TermPane pane={p} font={font} onFocus={() => onFocus(i)} />
-    </div>
-  )
-
+// WorkspaceHeader names the worktree and its branch in full: long ones wrap
+// rather than being cut off, since the sidebar truncates them.
+export function WorkspaceHeader({ ws }: { ws: main.WorkspaceInfo }) {
   return (
-    <div className={'workspace' + (visible ? '' : ' hidden') + (zoomed !== null ? ' has-zoom' : '')} ref={rootRef}>
-      {panes.length > 0 && (
-        <div className="col" style={{ width: right.length ? `${left}%` : '100%' }}>
-          {cell(panes[0], 0)}
-        </div>
-      )}
-      {right.length > 0 && (
-        <>
-          <div className="split split-v" onPointerDown={dragLeft} />
-          <div className="col col-right" ref={colRef}>
-            {right.map((p, j) => (
-              <PaneWithDivider key={p.id} last={j === right.length - 1} onDrag={dragRight(j)}>
-                {cell(p, j + 1)}
-              </PaneWithDivider>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+    <header className="ws-head">
+      <span className="ws-name">{ws.name}</span>
+      {ws.branch && <span className="ws-branch">{ws.branch}</span>}
+    </header>
   )
 }
 
-function PaneWithDivider(props: { children: React.ReactNode; last: boolean; onDrag: (e: React.PointerEvent) => void }) {
+const markNote: Record<string, string> ={ waiting: 'Claude is waiting for permission', idle: 'Claude finished: your turn' }
+const MIN_PANE = 240 // px
+let dragged: string | null = null // id of the tab being dragged
+
+// WorkspaceView is one worktree: a tab bar over a body per pane. Every terminal
+// is a direct child of the one grid, keyed by pane id and in backend order, and
+// only its grid cell and visibility change, so showing, moving or splitting
+// tabs never remounts one (that would lose its scrollback). Hidden tabs stay
+// laid out in their cell, so they are already fitted when shown.
+export function WorkspaceView(props: {
+  ws: main.WorkspaceInfo
+  layout: Layout
+  visible: boolean
+  font: Font
+  snap: main.Snapshot | null
+  onLayout: (f: (l: Layout) => Layout, focus?: boolean) => void // focus: then focus the focused tab's terminal
+  onRatio: (ratio: number, save?: boolean) => void
+  onNewTab: (kind: 'claude' | 'shell', pane: number) => void
+  onCloseTab: (id: string) => void
+  onSplit: () => void
+}) {
+  const { ws, layout: l, visible, font, snap, onLayout, onRatio } = props
+  const [menu, setMenu] = useState<{ pane: number; at: { x: number; y: number } } | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0) // for clamp, as the window resizes
+  useEffect(() => {
+    const el = rootRef.current!
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // A menu left open on another worktree doesn't come back with this one.
+  useEffect(() => {
+    if (!visible) setMenu(null)
+  }, [visible])
+  const byId = new Map((ws.panes ?? []).map((p) => [p.id, p]))
+  const paneOf = (id: string) => l.panes.findIndex((p) => p.tabs.includes(id))
+  const split = l.panes.length > 1
+  // Zoomed, the focused pane spans every column and the other is hidden in place,
+  // so its terminals keep their size.
+  const col = (i: number) => (l.zoom && i === l.focus ? '1 / -1' : i === 0 ? '1' : '3')
+  const away = (i: number) => l.zoom && i !== l.focus
+  const dim = (i: number) => split && i !== l.focus
+  const side = (i: number) => (i === 0 ? 'left' : 'right')
+  // The "+" menu's pane, which may have gone (emptied and unsplit) while it was open.
+  const menuPane = Math.min(menu?.pane ?? 0, l.panes.length - 1)
+
+  // Each pane stays at least MIN_PANE px wide (both halves, if narrower than that).
+  // A saved ratio is clamped as drawn, so a narrow window doesn't rewrite it.
+  const clamp = (r: number) => {
+    const w = width || rootRef.current?.clientWidth
+    const min = w ? Math.min(0.5, MIN_PANE / w) : 0
+    return Math.min(1 - min, Math.max(min, r))
+  }
+  const ratio = clamp(l.ratio)
+  const drag = (e: React.PointerEvent) => {
+    let r = l.ratio
+    startDrag(
+      e,
+      (ev) => {
+        const b = rootRef.current!.getBoundingClientRect()
+        onRatio((r = clamp((ev.clientX - b.left) / b.width)))
+      },
+      () => onRatio(r, true),
+    )
+  }
+  const nudge = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    onRatio(clamp(ratio + (e.key === 'ArrowLeft' ? -0.02 : 0.02)), true)
+  }
+
+  // Tabs drag to reorder, or onto the other pane's tab bar to move there.
+  // ponytail: no drop indicator; a dropped tab takes the place of the one it
+  // lands on. Draw an insertion mark if that feels blind.
+  const dropOn = (i: number, index: number) => ({
+    onDragOver: (e: React.DragEvent) => dragged && byId.has(dragged) && e.preventDefault(),
+    onDrop: (e: React.DragEvent) => {
+      const t = dragged ? byId.get(dragged) : undefined
+      if (!t) return
+      e.preventDefault()
+      e.stopPropagation()
+      onLayout((l) => place(l, t, i, index))
+    },
+  })
+
   return (
-    <>
-      {props.children}
-      {!props.last && <div className="split split-h" onPointerDown={props.onDrag} />}
-    </>
+    <div
+      className={'workspace' + (visible ? '' : ' hidden')}
+      ref={rootRef}
+      style={{ gridTemplateColumns: split ? `minmax(0, ${ratio}fr) 5px minmax(0, ${1 - ratio}fr)` : 'minmax(0, 1fr)' }}
+    >
+      <WorkspaceHeader ws={ws} />
+      {l.panes.map((p, i) => (
+        <div key={i} className={'tabbar' + (dim(i) ? ' dim' : '')} style={{ gridColumn: col(i), visibility: away(i) ? 'hidden' : undefined }} {...dropOn(i, p.tabs.length)}>
+          <div className="tabs" role="tablist" aria-label={split ? `${i === 0 ? 'Left' : 'Right'} pane tabs` : 'Tabs'}>
+            {p.tabs.map((id, k) => {
+              const t = byId.get(id)
+              if (!t) return null
+              const label = l.labels[id] ?? t.name
+              const current = i === l.focus && id === p.active
+              const note = current ? '' : (markNote[t.claude] ?? '')
+              return (
+                <div key={id} className={'tab' + (id === p.active ? ' active' : '') + (current ? ' current' : '')} {...dropOn(i, k)}>
+                  <button
+                    role="tab"
+                    aria-selected={id === p.active}
+                    aria-label={note ? `${label}, ${note}` : label}
+                    title={note || undefined}
+                    draggable
+                    onDragStart={(e) => {
+                      dragged = id
+                      e.dataTransfer.effectAllowed = 'move'
+                      e.dataTransfer.setData('text/plain', label)
+                    }}
+                    onDragEnd={() => (dragged = null)}
+                    onClick={() => onLayout((l) => activate(l, id))}
+                  >
+                    <i className={'tab-icon ' + t.kind} aria-hidden>
+                      {t.kind === 'claude' ? '✻' : '>_'}
+                    </i>
+                    {label}
+                    {note && (
+                      <i className={'cl-' + t.claude} aria-hidden>
+                        ◆
+                      </i>
+                    )}
+                  </button>
+                  <button className="tab-x" aria-label={`Close tab ${label}`} title={`Close tab ${label}`} onClick={() => props.onCloseTab(id)}>
+                    ×
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          <button
+            className="tool"
+            aria-label={split ? `New tab in ${side(i)} pane` : 'New tab'}
+            aria-haspopup="menu"
+            aria-expanded={menu?.pane === i}
+            title={split ? `New tab in ${side(i)} pane` : 'New tab'}
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect()
+              setMenu({ pane: i, at: { x: r.left, y: r.bottom + 2 } })
+            }}
+          >
+            +
+          </button>
+          <div className="tools">
+            {split ? (
+              <>
+                <button
+                  className="tool"
+                  aria-label={`Move tab to the ${i === 0 ? 'right' : 'left'} pane`}
+                  title={`Move tab to the ${i === 0 ? 'right' : 'left'} pane`}
+                  onClick={() => onLayout((l) => moveToOther(l, i))}
+                >
+                  {i === 0 ? '→' : '←'}
+                </button>
+                <button
+                  className="tool"
+                  aria-label={`Close ${side(i)} pane (its tabs move to the other pane)`}
+                  title={`Close ${side(i)} pane (its tabs move to the other pane)`}
+                  onClick={() => onLayout((l) => closePane(l, i))}
+                >
+                  ⊟
+                </button>
+              </>
+            ) : (
+              <button className="tool" aria-label="Split right" title={`Split right (${key(snap, 'Split Right')})`} onClick={props.onSplit}>
+                ◫
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+      {split && (
+        <div
+          className="divider"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize panes"
+          aria-valuenow={Math.round(ratio * 100)}
+          tabIndex={0}
+          style={{ visibility: l.zoom ? 'hidden' : undefined }}
+          onPointerDown={drag}
+          onKeyDown={nudge}
+        />
+      )}
+      {(ws.panes ?? []).map((t) => {
+        const i = paneOf(t.id)
+        if (i < 0) return null
+        const shown = l.panes[i].active === t.id && !away(i)
+        return (
+          <div
+            key={t.id}
+            className={'pane' + (dim(i) ? ' dim' : '')}
+            style={{ gridColumn: col(i), visibility: shown ? undefined : 'hidden' }}
+            onMouseDown={() => onLayout((l) => activate(l, t.id))}
+          >
+            <TermPane pane={t} font={font} dim={dim(i)} onFocus={() => onLayout((l) => activate(l, t.id), false)} />
+          </div>
+        )
+      })}
+      {menu && visible && (
+        <Menu
+          label="New tab"
+          at={menu.at}
+          onClose={() => setMenu(null)}
+          items={[
+            { label: 'New Claude tab', keys: key(snap, 'New Claude Tab'), onSelect: () => props.onNewTab('claude', menuPane) },
+            { label: 'New shell', keys: key(snap, 'New Shell'), onSelect: () => props.onNewTab('shell', menuPane) },
+          ]}
+        />
+      )}
+    </div>
   )
 }

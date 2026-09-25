@@ -35,6 +35,11 @@ type App struct {
 	cfgErr string
 	sess   *sessions
 
+	// gitMu serialises branch deletions (Remove's and DeleteBranch's): Wails runs
+	// each call on its own goroutine, and concurrent `git branch -d` runs fight
+	// over git's ref locks. Removing different worktrees at once is fine.
+	gitMu sync.Mutex
+
 	mu        sync.Mutex
 	ws        []Workspace
 	initial   string   // workspace to select on first load
@@ -264,8 +269,37 @@ func (a *App) Size(id string, cols, rows int) error { return a.sess.start(id, co
 // Write sends keyboard input to a pane.
 func (a *App) Write(id, data string) { a.sess.write(id, data) }
 
-// AddShell appends a shell pane to an open workspace.
-func (a *App) AddShell(name string) (Pane, error) { return a.sess.addShell(name) }
+// NewTab opens a tab in a workspace: kind "claude" runs its configured Claude
+// command (plain `claude` if none), "shell" a login shell. A workspace that
+// isn't open opens with just this tab.
+func (a *App) NewTab(name, kind string) (Pane, error) {
+	ws, ok := a.find(name)
+	if !ok {
+		return Pane{}, fmt.Errorf("no workspace named %q", name)
+	}
+	cmd := ""
+	switch kind {
+	case "claude":
+		cmd = "claude"
+		if i := slices.IndexFunc(ws.Panes, func(c string) bool { return paneKind(c) == "claude" }); i >= 0 {
+			cmd = ws.Panes[i]
+		}
+	case "shell":
+	default:
+		return Pane{}, fmt.Errorf("unknown tab kind %q", kind)
+	}
+	return a.sess.newTab(ws, cmd), nil
+}
+
+// CloseTab stops one tab's process; the workspace closes with its last tab.
+func (a *App) CloseTab(id string) error { return a.sess.closeTab(id) }
+
+// TabBusy reports whether closing a tab would interrupt Claude Code or a running
+// program, so the frontend can confirm first.
+func (a *App) TabBusy(id string) bool { return a.sess.busy(id) }
+
+// SeenTab clears a tab's "Claude wants you" mark once it is looked at.
+func (a *App) SeenTab(id string) { a.sess.seen(id) }
 
 // Close stops a workspace's panes; the worktree stays on disk.
 func (a *App) Close(name string) error { return a.sess.close(name) }
@@ -303,39 +337,74 @@ func (a *App) opened(ws Workspace, r Repo) string {
 	return ws.Name
 }
 
-// Remove removes a workspace's worktree, then stops its panes. It returns
-// "dirty" (and removes nothing) when there are uncommitted changes and force is
-// false. The list is not rescanned, so the frontend can still offer to delete
-// the branch; it reloads when the flow ends.
-func (a *App) Remove(name string, force bool) (string, error) {
+// RemoveResult is how a worktree removal went, shown in its sidebar row.
+type RemoveResult struct {
+	Status       string `json:"status"`       // "removed" | "dirty" (nothing removed) | "failed"
+	Reason       string `json:"reason"`       // one line, plain words
+	Detail       string `json:"detail"`       // git's full text, for a tooltip
+	BranchKept   string `json:"branchKept"`   // "" = deleted or none; "unmerged"; else git's one-line error
+	BranchDetail string `json:"branchDetail"` // git's full text when BranchKept is its error
+}
+
+// maxDirtyLines caps the uncommitted changes listed in a dirty removal's detail.
+const maxDirtyLines = 20
+
+// Remove removes a workspace's worktree, stops its panes, then safely deletes
+// its branch (git branch -d). With uncommitted changes and !force it removes
+// nothing and reports "dirty". The list is not rescanned; the frontend reloads.
+func (a *App) Remove(name string, force bool) RemoveResult {
 	ws, ok := a.find(name)
 	if !ok {
-		return "", fmt.Errorf("no workspace named %q", name)
+		return RemoveResult{Status: "failed", Reason: fmt.Sprintf("no workspace named %q", name)}
 	}
 	if ws.RepoPath == "" {
-		return "", fmt.Errorf("%s is not a git worktree", name)
+		return RemoveResult{Status: "failed", Reason: "not a git worktree"}
 	}
 	err := removeWorktree(ws.RepoPath, ws.Dir, force)
-	if !force && errors.Is(err, errWorktreeDirty) {
-		return "dirty", nil
+	var dirty *dirtyError
+	if errors.As(err, &dirty) {
+		r := RemoveResult{Status: "dirty"}
+		r.Reason, r.Detail = explain(dirty.refusal)
+		if n := len(dirty.changes); n > 0 {
+			r.Reason = fmt.Sprintf("%d uncommitted change%s", n, plural(n, "", "s"))
+			list := dirty.changes
+			if n > maxDirtyLines {
+				list = append(list[:maxDirtyLines:maxDirtyLines], fmt.Sprintf("… and %d more", n-maxDirtyLines))
+			}
+			r.Detail += "\n\n" + strings.Join(list, "\n")
+		}
+		return r
 	}
 	if err != nil {
-		return "", err
+		r := RemoveResult{Status: "failed"}
+		r.Reason, r.Detail = explain(err)
+		return r
 	}
 	if a.sess.isOpen(name) {
 		_ = a.sess.close(name)
 	}
-	return "", nil
+	r := RemoveResult{Status: "removed"}
+	a.gitMu.Lock()
+	r.BranchKept, r.BranchDetail = branchKept(removeBranch(ws.RepoPath, ws.Branch, false))
+	a.gitMu.Unlock()
+	return r
 }
 
-// DeleteBranch safely deletes a branch (git branch -d). It returns "unmerged"
-// when git refused because the branch isn't fully merged.
-func (a *App) DeleteBranch(repoPath, branch string) (string, error) {
-	err := removeBranch(repoPath, branch)
-	if errors.Is(err, errBranchUnmerged) {
-		return "unmerged", nil
-	}
-	return "", err
+// BranchResult is how deleting a kept branch went: Kept is why it is still
+// there, as RemoveResult.BranchKept ("" once deleted), Detail as BranchDetail.
+type BranchResult struct {
+	Kept   string `json:"kept"`
+	Detail string `json:"detail"`
+}
+
+// DeleteBranch deletes a branch left behind by Remove: safely (git branch -d)
+// or, with force, even when unmerged (-D).
+func (a *App) DeleteBranch(repoPath, branch string, force bool) BranchResult {
+	a.gitMu.Lock()
+	defer a.gitMu.Unlock()
+	var r BranchResult
+	r.Kept, r.Detail = branchKept(removeBranch(repoPath, branch, force))
+	return r
 }
 
 // Branches lists local and remote branches, for autocompletion.
@@ -408,13 +477,17 @@ var shortcuts = []shortcut{
 	{"File", "New Worktree…", "new", "n", cmdMod},
 	{"File", "New Worktree from Branch…", "checkout", "n", shiftMod},
 	{"File", "", "", "", nil},
-	{"File", "Open in Terminal", "terminal", "t", shiftMod},
+	{"File", "New Claude Tab", "new-claude", "t", cmdMod},
+	{"File", "New Shell", "new-shell", "t", shiftMod},
+	{"File", "", "", "", nil},
+	{"File", "Open in Terminal", "terminal", "o", shiftMod},
 	{"File", "", "", "", nil},
 	{"File", "Close Worktree", "close", "w", cmdMod},
 	{"File", "Delete Worktree…", "delete", "backspace", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "Reload Worktrees", "reload", "r", cmdMod},
 
+	{"View", "Split Right", "split", "d", cmdMod},
 	{"View", "Zoom Pane", "zoom", "return", shiftMod},
 	{"View", "", "", "", nil},
 	{"View", "Bigger Text", "font-up", "=", cmdMod},
@@ -425,14 +498,10 @@ var shortcuts = []shortcut{
 	{"Go", "Next Worktree", "next-ws", "]", shiftMod},
 	{"Go", "Previous Worktree", "prev-ws", "[", shiftMod},
 	{"Go", "", "", "", nil},
-	{"Go", "Next Pane", "next-pane", "]", cmdMod},
-	{"Go", "Previous Pane", "prev-pane", "[", cmdMod},
+	{"Go", "Next Tab", "next-tab", "]", cmdMod},
+	{"Go", "Previous Tab", "prev-tab", "[", cmdMod},
 	{"Go", "Pane Left", "pane-left", "left", altMod},
 	{"Go", "Pane Right", "pane-right", "right", altMod},
-	{"Go", "Pane Above", "pane-up", "up", altMod},
-	{"Go", "Pane Below", "pane-down", "down", altMod},
-	{"Go", "", "", "", nil},
-	{"Go", "Add Shell Pane", "add-shell", "d", cmdMod},
 
 	{"Help", "Keyboard Shortcuts", "help", "/", cmdMod},
 }

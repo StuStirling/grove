@@ -34,6 +34,7 @@ frontend:
 	cd frontend && npm install --no-audit --no-fund && npm run build
 
 test: frontend
+	cd frontend && npm test
 	go test -tags "$(TAGS)" ./...
 
 vet: frontend

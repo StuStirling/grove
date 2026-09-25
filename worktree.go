@@ -289,60 +289,142 @@ func checkoutWorktree(r Repo, branch, intention string) (Workspace, error) {
 	return workspaceFor(r, path, local), nil
 }
 
+// gitError is a git command that failed. It keeps git's own words apart from
+// Go's "exit status 128", so the sidebar can show them.
+type gitError struct {
+	cmd string // e.g. "git branch -d x"
+	out string // git's output, trimmed
+}
+
+func (e *gitError) Error() string { return e.cmd + ": " + e.out }
+
+// runGit runs git in dir, returning a *gitError when it fails.
+func runGit(dir string, args ...string) error {
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		text = err.Error() // git itself didn't run
+	}
+	return &gitError{"git " + strings.Join(args, " "), text}
+}
+
+// explain splits a failure into a one-line reason, git's first meaningful line
+// without its "fatal: " / "error: " prefix, and the full text for a tooltip.
+func explain(err error) (reason, detail string) {
+	detail = err.Error()
+	var ge *gitError
+	if errors.As(err, &ge) {
+		detail = ge.out
+	}
+	for _, l := range strings.Split(detail, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "hint:") || strings.HasPrefix(l, "warning:") {
+			continue
+		}
+		return strings.TrimPrefix(strings.TrimPrefix(l, "fatal: "), "error: "), detail
+	}
+	return detail, detail
+}
+
 // errWorktreeDirty signals that a plain `git worktree remove` was refused because
 // the worktree has genuine uncommitted changes (not just submodules), so the
 // caller must opt into a forced removal.
 var errWorktreeDirty = errors.New("worktree has uncommitted changes")
 
-// worktreeDirty reports real changes in the worktree, ignoring submodules. The
+// dirtyError is errWorktreeDirty with git's refusal and the changes it found.
+type dirtyError struct {
+	refusal error
+	changes []string // `git status --porcelain` lines; empty if status failed
+}
+
+func (e *dirtyError) Error() string { return errWorktreeDirty.Error() }
+func (e *dirtyError) Unwrap() error { return errWorktreeDirty }
+
+// worktreeChanges lists real changes in the worktree, ignoring submodules. The
 // submodule working dirs are exactly what make a plain `git worktree remove` fail
 // in the first place, so we discount them when deciding whether forcing is safe.
-func worktreeDirty(dir string) bool {
+func worktreeChanges(dir string) ([]string, error) {
 	out, err := exec.Command("git", "-C", dir,
 		"status", "--porcelain", "--ignore-submodules=all").Output()
 	if err != nil {
-		return true // can't tell → treat as dirty, stay safe
+		return nil, err
 	}
-	return strings.TrimSpace(string(out)) != ""
+	// Not TrimSpace: a porcelain line can start with a space (" M file").
+	if s := strings.TrimRight(string(out), "\n"); s != "" {
+		return strings.Split(s, "\n"), nil
+	}
+	return nil, nil
+}
+
+// refusedAsDirty reports whether git refused a plain `git worktree remove` over
+// changes or populated submodules, which --force overrides. It doesn't override
+// other refusals (the main worktree, a locked one), so those don't offer it.
+// ponytail: matches git's English messages, as removeBranch does; under a
+// translated git a dirty worktree reports git's refusal with no Force remove.
+func refusedAsDirty(err error) bool {
+	var ge *gitError
+	return errors.As(err, &ge) &&
+		(strings.Contains(ge.out, "contains modified or untracked files") || strings.Contains(ge.out, "containing submodules"))
 }
 
 // removeWorktree removes the linked worktree at dir, running git from repoPath
 // (which must not be dir). It tries a plain remove first; if git refuses, it only
-// retries with --force when the worktree is clean ignoring submodules, otherwise
-// it returns errWorktreeDirty so the caller can ask for explicit confirmation.
+// retries with --force when the worktree is clean ignoring submodules. With real
+// changes it returns a *dirtyError, so the caller can ask for explicit
+// confirmation, or git's error when that isn't what git refused over.
 func removeWorktree(repoPath, dir string, force bool) error {
-	if _, err := exec.Command("git", "-C", repoPath,
-		"worktree", "remove", dir).CombinedOutput(); err == nil {
+	err := runGit(repoPath, "worktree", "remove", dir)
+	if err == nil {
 		return nil
 	}
-	if !force && worktreeDirty(dir) {
-		return errWorktreeDirty
+	if !force {
+		// Can't tell (status failed) → treat as dirty, stay safe.
+		if changes, serr := worktreeChanges(dir); serr != nil || len(changes) > 0 {
+			if refusedAsDirty(err) {
+				return &dirtyError{err, changes}
+			}
+			return err
+		}
 	}
-	if out, err := exec.Command("git", "-C", repoPath,
-		"worktree", "remove", "--force", dir).CombinedOutput(); err != nil {
-		return fmt.Errorf("git worktree remove --force: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return runGit(repoPath, "worktree", "remove", "--force", dir)
 }
 
 // errBranchUnmerged signals that `git branch -d` was refused because the branch
 // is not fully merged, so it was kept rather than force-deleted.
 var errBranchUnmerged = errors.New("branch not fully merged")
 
-// removeBranch safely deletes a local branch with -d (refuses unmerged branches).
-// An unmerged branch is reported as errBranchUnmerged; an empty name is a no-op.
-func removeBranch(repoPath, branch string) error {
+// removeBranch deletes a local branch: safely with -d, which refuses an unmerged
+// branch (reported as errBranchUnmerged), or with -D when force is set. An empty
+// name is a no-op.
+func removeBranch(repoPath, branch string, force bool) error {
 	if strings.TrimSpace(branch) == "" {
 		return nil
 	}
-	out, err := exec.Command("git", "-C", repoPath, "branch", "-d", branch).CombinedOutput()
-	if err != nil {
-		if strings.Contains(string(out), "not fully merged") {
-			return errBranchUnmerged
-		}
-		return fmt.Errorf("git branch -d %s: %v: %s", branch, err, strings.TrimSpace(string(out)))
+	flag := "-d"
+	if force {
+		flag = "-D"
 	}
-	return nil
+	err := runGit(repoPath, "branch", flag, branch)
+	var ge *gitError
+	if errors.As(err, &ge) && strings.Contains(ge.out, "not fully merged") {
+		return errBranchUnmerged
+	}
+	return err
+}
+
+// branchKept says why removeBranch kept a branch: "" when it went, "unmerged",
+// else git's one line, with git's full text as detail.
+func branchKept(err error) (reason, detail string) {
+	switch {
+	case err == nil:
+		return "", ""
+	case errors.Is(err, errBranchUnmerged):
+		return "unmerged", ""
+	}
+	return explain(err)
 }
 
 // expandRepo turns a [[repo]] entry into one workspace per worktree.
