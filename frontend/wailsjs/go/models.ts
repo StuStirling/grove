@@ -4,6 +4,8 @@ export namespace main {
 	    id: string;
 	    cmd: string;
 	    kind: string;
+	    name: string;
+	    claude: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Pane(source);
@@ -14,6 +16,8 @@ export namespace main {
 	        this.id = source["id"];
 	        this.cmd = source["cmd"];
 	        this.kind = source["kind"];
+	        this.name = source["name"];
+	        this.claude = source["claude"];
 	    }
 	}
 	export class RemoveResult {

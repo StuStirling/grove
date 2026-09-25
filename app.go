@@ -268,8 +268,37 @@ func (a *App) Size(id string, cols, rows int) error { return a.sess.start(id, co
 // Write sends keyboard input to a pane.
 func (a *App) Write(id, data string) { a.sess.write(id, data) }
 
-// AddShell appends a shell pane to an open workspace.
-func (a *App) AddShell(name string) (Pane, error) { return a.sess.addShell(name) }
+// NewTab opens a tab in a workspace: kind "claude" runs its configured Claude
+// command (plain `claude` if none), "shell" a login shell. A workspace that
+// isn't open opens with just this tab.
+func (a *App) NewTab(name, kind string) (Pane, error) {
+	ws, ok := a.find(name)
+	if !ok {
+		return Pane{}, fmt.Errorf("no workspace named %q", name)
+	}
+	cmd := ""
+	switch kind {
+	case "claude":
+		cmd = "claude"
+		if i := slices.IndexFunc(ws.Panes, func(c string) bool { return paneKind(c) == "claude" }); i >= 0 {
+			cmd = ws.Panes[i]
+		}
+	case "shell":
+	default:
+		return Pane{}, fmt.Errorf("unknown tab kind %q", kind)
+	}
+	return a.sess.newTab(ws, cmd), nil
+}
+
+// CloseTab stops one tab's process; the workspace closes with its last tab.
+func (a *App) CloseTab(id string) error { return a.sess.closeTab(id) }
+
+// TabBusy reports whether closing a tab would interrupt Claude Code or a running
+// program, so the frontend can confirm first.
+func (a *App) TabBusy(id string) bool { return a.sess.busy(id) }
+
+// SeenTab clears a tab's "Claude wants you" mark once it is looked at.
+func (a *App) SeenTab(id string) { a.sess.seen(id) }
 
 // Close stops a workspace's panes; the worktree stays on disk.
 func (a *App) Close(name string) error { return a.sess.close(name) }
@@ -451,15 +480,16 @@ var shortcuts = []shortcut{
 	{"File", "New Worktree…", "new", "n", cmdMod},
 	{"File", "New Worktree from Branch…", "checkout", "n", shiftMod},
 	{"File", "", "", "", nil},
-	{"File", "Open in Terminal", "terminal", "t", shiftMod},
+	{"File", "New Claude Tab", "new-claude", "t", cmdMod},
+	{"File", "New Shell", "new-shell", "t", shiftMod},
+	{"File", "", "", "", nil},
+	{"File", "Open in Terminal", "terminal", "o", shiftMod},
 	{"File", "", "", "", nil},
 	{"File", "Close Worktree", "close", "w", cmdMod},
 	{"File", "Delete Worktree…", "delete", "backspace", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "Reload Worktrees", "reload", "r", cmdMod},
 
-	{"View", "Zoom Pane", "zoom", "return", shiftMod},
-	{"View", "", "", "", nil},
 	{"View", "Bigger Text", "font-up", "=", cmdMod},
 	{"View", "Smaller Text", "font-down", "-", cmdMod},
 	{"View", "Actual Size", "font-reset", "0", cmdMod},
@@ -468,14 +498,8 @@ var shortcuts = []shortcut{
 	{"Go", "Next Worktree", "next-ws", "]", shiftMod},
 	{"Go", "Previous Worktree", "prev-ws", "[", shiftMod},
 	{"Go", "", "", "", nil},
-	{"Go", "Next Pane", "next-pane", "]", cmdMod},
-	{"Go", "Previous Pane", "prev-pane", "[", cmdMod},
-	{"Go", "Pane Left", "pane-left", "left", altMod},
-	{"Go", "Pane Right", "pane-right", "right", altMod},
-	{"Go", "Pane Above", "pane-up", "up", altMod},
-	{"Go", "Pane Below", "pane-down", "down", altMod},
-	{"Go", "", "", "", nil},
-	{"Go", "Add Shell Pane", "add-shell", "d", cmdMod},
+	{"Go", "Next Tab", "next-tab", "]", cmdMod},
+	{"Go", "Previous Tab", "prev-tab", "[", cmdMod},
 
 	{"Help", "Keyboard Shortcuts", "help", "/", cmdMod},
 }

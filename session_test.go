@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/base64"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -112,6 +114,167 @@ func TestSessionsCloseWithLastPane(t *testing.T) {
 	}
 	// The workspace closes when its last pane exits.
 	waitFor(t, "workspace to close", func() bool { return !s.isOpen("w") })
+}
+
+func TestTabsOpenAndCloseWorkspace(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	s := newSessions("", (&recorder{}).emit)
+	ws := Workspace{Name: "w", Dir: t.TempDir(), Panes: []string{"claude", ""}}
+
+	// A tab on a closed workspace opens it with just that tab.
+	a := s.newTab(ws, "")
+	if !s.isOpen("w") || a.Name != "zsh" || a.Kind != "shell" {
+		t.Fatalf("after newTab: open=%v pane=%+v", s.isOpen("w"), a)
+	}
+	b := s.newTab(ws, "claude --model opus")
+	if open, _ := s.snapshot(); len(open["w"]) != 2 || b.Name != "claude" || b.Kind != "claude" {
+		t.Fatalf("panes = %+v", open["w"])
+	}
+
+	if err := s.closeTab(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !s.isOpen("w") {
+		t.Fatal("closed with a tab left")
+	}
+	// Closing the last tab closes the workspace.
+	if err := s.closeTab(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if s.isOpen("w") {
+		t.Fatal("still open after its last tab closed")
+	}
+	if err := s.closeTab(b.ID); err == nil {
+		t.Fatal("closing a closed tab should fail")
+	}
+}
+
+func TestClaudeMarksPerPane(t *testing.T) {
+	r := &recorder{}
+	s := newSessions("", r.emit)
+	ps := s.ensure(Workspace{Name: "w", Dir: t.TempDir(), Panes: []string{"claude", "claude", "claude"}}, "")
+	summary := func() string { _, cl := s.snapshot(); return cl["w"] }
+	mark := func(i int) string { open, _ := s.snapshot(); return open["w"][i].Claude }
+
+	// The workspace's mark is the one that most needs you: waiting > idle > working.
+	for i, st := range []string{"working", "idle", "waiting"} {
+		if err := s.setClaude(ps[i].ID, st); err != nil {
+			t.Fatal(err)
+		}
+		if got := summary(); got != st {
+			t.Fatalf("after %s: summary = %q", st, got)
+		}
+	}
+	if mark(0) != "working" || mark(1) != "idle" || mark(2) != "waiting" {
+		t.Fatalf("marks = %q %q %q", mark(0), mark(1), mark(2))
+	}
+
+	// Looking at a tab clears waiting and idle, not working, and only a real
+	// change tells the frontend.
+	s.seen(ps[2].ID)
+	s.seen(ps[1].ID)
+	before := r.changes
+	s.seen(ps[0].ID)
+	s.seen(ps[1].ID)
+	if mark(0) != "working" || mark(1) != "" || mark(2) != "" || r.changes != before {
+		t.Fatalf("after seen: marks = %q %q %q, changes %d -> %d", mark(0), mark(1), mark(2), before, r.changes)
+	}
+
+	// A pane's mark goes with it.
+	if err := s.closeTab(ps[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := summary(); got != "" {
+		t.Fatalf("mark survived its pane: %q", got)
+	}
+}
+
+// atPrompt waits until a shell pane has run its startup files and reads
+// commands, so nothing from a login profile is in the foreground.
+func atPrompt(t *testing.T, s *sessions, r *recorder, id string) {
+	t.Helper()
+	s.write(id, "echo ready-$((40+2))\r")
+	waitFor(t, "the shell's prompt", func() bool { return strings.Contains(r.output(), "ready-42") })
+}
+
+func TestTabBusy(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	r := &recorder{}
+	s := newSessions("", r.emit)
+	dir := t.TempDir()
+	ws := Workspace{Name: "w", Dir: dir}
+
+	sh := s.newTab(ws, "")
+	if s.busy(sh.ID) {
+		t.Fatal("a pane that hasn't started is busy")
+	}
+	if err := s.start(sh.ID, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	atPrompt(t, s, r, sh.ID)
+	if s.busy(sh.ID) {
+		t.Fatal("an idle shell is busy")
+	}
+	s.write(sh.ID, "sleep 5\r")
+	waitFor(t, "sleep to be in the foreground", func() bool { return s.busy(sh.ID) })
+	s.write(sh.ID, "\x03") // Ctrl-C: back to the prompt
+	waitFor(t, "the shell to be back at its prompt", func() bool { return !s.busy(sh.ID) })
+
+	// A Claude tab is busy while its mark says it's working.
+	fake := dir + "/claude"
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cl := s.newTab(ws, fake)
+	if err := s.start(cl.ID, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	for st, want := range map[string]bool{"working": true, "idle": false, "waiting": false, "": false} {
+		_ = s.setClaude(cl.ID, st)
+		if got := s.busy(cl.ID); got != want {
+			t.Errorf("claude %q: busy = %v, want %v", st, got, want)
+		}
+	}
+	_ = s.close("w")
+}
+
+func TestCloseTabEndsItsProcesses(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	r := &recorder{}
+	s := newSessions("", r.emit)
+	p := s.newTab(Workspace{Name: "w", Dir: t.TempDir()}, "")
+	if err := s.start(p.ID, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	atPrompt(t, s, r, p.ID)
+	s.write(p.ID, "sleep 30\r")
+	waitFor(t, "sleep to be in the foreground", func() bool { return s.busy(p.ID) })
+	s.mu.Lock()
+	pid := s.panes[p.ID].cmd.Process.Pid
+	job, err := foreground(s.panes[p.ID].f)
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.closeTab(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Both the shell and the program it was running exit (and are reaped).
+	waitFor(t, "the shell to exit", func() bool { return syscall.Kill(pid, 0) != nil })
+	waitFor(t, "the foreground job to exit", func() bool { return syscall.Kill(-job, 0) != nil })
+	if s.isOpen("w") {
+		t.Fatal("still open after its only tab closed")
+	}
+}
+
+func TestPaneName(t *testing.T) {
+	t.Setenv("SHELL", "/usr/local/bin/fish")
+	for cmd, want := range map[string]string{"": "fish", "claude --model opus": "claude", "/opt/bin/claude": "claude", "lazygit": "lazygit"} {
+		if got := paneName(cmd); got != want {
+			t.Errorf("paneName(%q) = %q, want %q", cmd, got, want)
+		}
+	}
 }
 
 func TestUserShellFallback(t *testing.T) {

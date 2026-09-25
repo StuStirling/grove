@@ -262,7 +262,7 @@ terminal = ""
 [[repo]]
 # path        = ""                          # defaults to this repo (this file's dir)
 prefix        = ""                          # optional name prefix
-panes         = ["claude", ""]              # first = big pane; rest = right column ("" = your shell)
+panes         = ["claude", ""]              # the tabs a worktree opens with ("" = your shell)
 # New-worktree settings (used by New Worktree, cmd-N):
 worktree_root = ""                          # REQUIRED to create: dir for new worktrees, e.g. "~/code/myrepo-worktrees"
 base          = "origin/main"               # new branch start-point (fetched first)

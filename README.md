@@ -101,20 +101,20 @@ Shortcuts are menu commands, so they work while a terminal pane has focus.
 Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (plus
 **Alt** where the Mac shortcut already uses ⇧).
 
-| Worktrees | | Panes | |
+| Worktrees | | Tabs | |
 |---|---|---|---|
-| Go to worktree (type to filter, ↑↓ ↩) | ⌘P | Next / previous pane | ⌘] / ⌘[ |
-| Worktree 1–9 | ⌘1–⌘9 | Pane left / right / above / below | ⌘⌥←→↑↓ |
-| Next / previous open worktree | ⌘⇧] / ⌘⇧[ | Zoom pane | ⌘⇧↩ |
-| New worktree… | ⌘N | Add shell pane | ⌘D |
-| New worktree from branch… | ⌘⇧N | Bigger / smaller / actual text | ⌘= / ⌘- / ⌘0 |
-| Close worktree (stop its panes) | ⌘W | Newline in Claude Code | ⇧↩ |
-| Delete worktree… | ⌘⌫ | Open link | ⌘-click |
-| Reload worktrees | ⌘R | Select over a mouse-aware app | ⌥-drag |
-| Open in external terminal | ⌘⇧T | Keyboard shortcuts | ⌘/ |
+| Go to worktree (type to filter, ↑↓ ↩) | ⌘P | New Claude tab | ⌘T |
+| Worktree 1–9 | ⌘1–⌘9 | New shell | ⌘⇧T |
+| Next / previous open worktree | ⌘⇧] / ⌘⇧[ | Next / previous tab | ⌘] / ⌘[ |
+| New worktree… | ⌘N | Bigger / smaller / actual text | ⌘= / ⌘- / ⌘0 |
+| New worktree from branch… | ⌘⇧N | Newline in Claude Code | ⇧↩ |
+| Close worktree (stop its tabs) | ⌘W | Open link | ⌘-click |
+| Delete worktree… | ⌘⌫ | Select over a mouse-aware app | ⌥-drag |
+| Reload worktrees | ⌘R | Keyboard shortcuts | ⌘/ |
+| Open in external terminal | ⌘⇧O | | |
 | Open repository (its own window) | ⌘O | | |
 
-While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧T act on the highlighted
+While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧O act on the highlighted
 worktree; otherwise they act on the one you're in. Dialogs take **Y / N**, ↩ and
 Esc; deleting needs an explicit **Y**. After that one confirm, a delete shows its
 progress in the worktree's own row, and several can run at once. If the worktree
@@ -163,7 +163,7 @@ worktrees use the main worktree's). If none is found it falls back to the global
 `~/.config/grove/workspaces.toml`.
 
 ```toml
-# Open a worktree in an external terminal (⌘⇧T, `grove open <name> -w`).
+# Open a worktree in an external terminal (⌘⇧O, `grove open <name> -w`).
 # {cmd} = a shell started in the worktree, {dir} = the worktree path.
 #   macOS: "open -na Ghostty --args --working-directory={dir}"
 #          "open -na WezTerm --args start --cwd {dir}"
@@ -176,7 +176,7 @@ font_size   = 13                          # pane font size in px
 [[repo]]
 # path        = ""                       # defaults to this repo (the config's dir)
 prefix        = ""                        # optional name prefix
-panes         = ["claude", ""]            # first = big pane; rest = right column ("" = your shell)
+panes         = ["claude", ""]            # the tabs a worktree opens with ("" = your shell)
 worktree_root = "~/code/myrepo-worktrees" # where New Worktree creates <root>/<intention>
 base          = "origin/main"             # new-branch start-point (fetched if it's a remote ref)
 setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane after creating
@@ -188,11 +188,18 @@ setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane afte
 # panes = [""]
 ```
 
-`panes` is one command per pane (`""` = your login shell: `$SHELL`, zsh on macOS
-by default). Extra panes stack in the right column, e.g.
-`["claude", "", "lazygit"]`. When a pane's program exits its pane closes, and a
-worktree closes with its last pane. Config is read when the window opens; restart
-grove after editing it.
+`panes` is one command per tab (`""` = your login shell: `$SHELL`, zsh on macOS
+by default), e.g. `["claude", "", "lazygit"]`. When a tab's program exits its tab
+closes, and a worktree closes with its last tab. Config is read when the window
+opens; restart grove after editing it.
+
+Add tabs as you go: **⌘T** opens another Claude Code session in the worktree
+(your first Claude entry in `panes`, flags and all, else `claude`) and **⌘⇧T** a
+shell; the **+** at the end of the tab bar does either. Tabs are named after
+their program and numbered when there are several (`zsh`, `zsh 2`). A tab whose
+Claude Code wants you shows ◆ until you look at it. Closing a tab (×) stops its
+program, and asks first while Claude Code is working or a shell is running
+something. A worktree with no tabs offers to open one.
 
 ## How it works
 

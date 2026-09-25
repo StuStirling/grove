@@ -82,24 +82,31 @@ button kbd { margin-left: 6px; background: transparent; }
 
 /* ---- panes ---- */
 .main { grid-row: 1; position: relative; min-width: 0; min-height: 0; }
-.workspace { position: absolute; inset: 0; display: flex; padding: 4px; gap: 0; }
+/* A worktree is a grid: tab bars in the upper row, bodies in the last. Every
+   terminal is placed in its pane's body cell, stacked with its pane's other tabs. */
+.workspace { position: absolute; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); }
 /* Background workspaces stay laid out (so their panes keep their size) but unseen. */
 .workspace.hidden, .workspace.hidden * { visibility: hidden !important; }
-.col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.col-right { flex: 1; }
-.pane { flex: 1; min-height: 0; min-width: 0; border: 1px solid var(--border); border-radius: 4px; padding: 4px 2px 2px 6px; background: var(--bg); }
-.pane.focused { border-color: var(--accent); }
-.workspace.has-zoom .pane:not(.zoomed) { visibility: hidden; }
-.pane.zoomed { position: absolute; inset: 4px; z-index: 2; }
+.tabbar { grid-row: -3; display: flex; align-items: stretch; min-width: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.tabs { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tab { flex: none; display: flex; align-items: center; border-top: 2px solid transparent; border-right: 1px solid var(--border); color: var(--muted); }
+.tab.active { background: var(--bg); color: var(--text); }
+.tab.current { border-top-color: var(--accent); }
+.tab button, .tabbar .tool { background: transparent; border: 0; border-radius: 0; color: inherit; }
+.tab [role='tab'] { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; white-space: nowrap; }
+.tab-icon { font-style: normal; }
+.tab-icon.claude { color: var(--idle); }
+.tab-icon.shell { color: var(--muted); font: 11px ui-monospace, Menlo, monospace; }
+.tab .tab-x { padding: 4px 8px 4px 4px; color: var(--dim); }
+.tabbar .tool { flex: none; padding: 4px 10px; color: var(--muted); }
+.tab .tab-x:hover, .tabbar .tool:hover { color: var(--text); }
+.pane { grid-row: -2; min-height: 0; min-width: 0; padding: 4px 2px 2px 6px; background: var(--bg); }
 .term { width: 100%; height: 100%; }
 .term .xterm { height: 100%; }
 .term .xterm-viewport { background: transparent !important; }
-.split { flex: none; background: transparent; }
-.split-v { width: 5px; cursor: col-resize; }
-.split-h { height: 5px; cursor: row-resize; }
-.split:hover { background: var(--border-strong); }
 .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .placeholder .hint { color: var(--dim); }
+.placeholder .actions { display: flex; gap: 8px; }
 
 /* ---- popup menus ---- */
 .menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 190px; padding: 4px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }

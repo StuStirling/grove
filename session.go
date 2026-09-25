@@ -12,13 +12,16 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
-// Pane is one terminal in a workspace's layout, as the frontend sees it.
+// Pane is one terminal (a tab) of a workspace, as the frontend sees it.
 type Pane struct {
-	ID   string `json:"id"`
-	Cmd  string `json:"cmd"`  // configured command; "" = login shell
-	Kind string `json:"kind"` // "claude" | "shell" (a login shell or any other command)
+	ID     string `json:"id"`
+	Cmd    string `json:"cmd"`    // configured command; "" = login shell
+	Kind   string `json:"kind"`   // "claude" | "shell" (a login shell or any other command)
+	Name   string `json:"name"`   // base tab label: "claude", "zsh", "lazygit", ...
+	Claude string `json:"claude"` // this pane's Claude Code mark: "working" | "waiting" | "idle" | ""
 }
 
 // pane is a Pane plus its process. The process starts lazily, on the frontend's
@@ -36,28 +39,19 @@ type pane struct {
 // in open; it closes when its last pane exits or on Close.
 type sessions struct {
 	mu     sync.Mutex
-	open   map[string][]*pane // workspace name -> panes, in layout order
+	open   map[string][]*pane // workspace name -> panes, in the order they opened
 	panes  map[string]*pane   // pane id -> pane
-	claude map[string]claudeMark
 	nextID int
 	sock   string // exported to panes as GROVE_SOCK, for `grove state`
 	emit   func(event string, data ...any)
 }
 
-// claudeMark is a workspace's Claude Code state and the pane that reported it,
-// so the mark clears when that pane exits.
-type claudeMark struct {
-	state string // "working" | "waiting" | "idle"
-	pane  string
-}
-
 func newSessions(sock string, emit func(string, ...any)) *sessions {
 	return &sessions{
-		open:   map[string][]*pane{},
-		panes:  map[string]*pane{},
-		claude: map[string]claudeMark{},
-		sock:   sock,
-		emit:   emit,
+		open:  map[string][]*pane{},
+		panes: map[string]*pane{},
+		sock:  sock,
+		emit:  emit,
 	}
 }
 
@@ -92,24 +86,36 @@ func (s *sessions) ensure(ws Workspace, setup string) []Pane {
 // newPane registers a pane; callers hold s.mu.
 func (s *sessions) newPane(ws, dir, cmd string) *pane {
 	s.nextID++
-	p := &pane{Pane: Pane{ID: fmt.Sprintf("p%d", s.nextID), Cmd: cmd, Kind: paneKind(cmd)}, ws: ws, dir: dir}
+	p := &pane{Pane: Pane{ID: fmt.Sprintf("p%d", s.nextID), Cmd: cmd, Kind: paneKind(cmd), Name: paneName(cmd)}, ws: ws, dir: dir}
 	s.panes[p.ID] = p
 	return p
 }
 
-// addShell appends a plain shell pane to an open workspace.
-func (s *sessions) addShell(ws string) (Pane, error) {
+// newTab adds a pane running cmd to a workspace. A workspace that isn't open
+// opens with just this pane, not its configured set.
+func (s *sessions) newTab(ws Workspace, cmd string) Pane {
 	s.mu.Lock()
-	ps, ok := s.open[ws]
-	if !ok {
-		s.mu.Unlock()
-		return Pane{}, fmt.Errorf("%s is not open", ws)
-	}
-	p := s.newPane(ws, ps[0].dir, "")
-	s.open[ws] = append(ps, p)
+	p := s.newPane(ws.Name, ws.Dir, cmd)
+	s.open[ws.Name] = append(s.open[ws.Name], p)
 	s.mu.Unlock()
 	s.changed()
-	return p.Pane, nil
+	return p.Pane
+}
+
+// closeTab stops one pane, as closing a terminal tab does. The workspace closes
+// with its last pane.
+func (s *sessions) closeTab(id string) error {
+	s.mu.Lock()
+	p, ok := s.panes[id]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("no pane %s", id)
+	}
+	s.forget(p)
+	hangup(p)
+	s.mu.Unlock()
+	s.changed()
+	return nil
 }
 
 func publicPanes(ps []*pane) []Pane {
@@ -170,14 +176,22 @@ func (s *sessions) pump(p *pane) {
 	}
 }
 
-// drop removes a pane whose process exited; the workspace closes with its last
-// pane.
+// drop removes a pane whose process exited.
 func (s *sessions) drop(p *pane) {
 	s.mu.Lock()
 	if s.panes[p.ID] != p {
 		s.mu.Unlock()
 		return // already stopped by close
 	}
+	s.forget(p)
+	_ = p.f.Close()
+	s.mu.Unlock()
+	s.changed()
+}
+
+// forget unregisters a pane, and with it its Claude mark; the workspace closes
+// with its last pane. Callers hold s.mu.
+func (s *sessions) forget(p *pane) {
 	delete(s.panes, p.ID)
 	ps := s.open[p.ws]
 	for i, q := range ps {
@@ -188,16 +202,9 @@ func (s *sessions) drop(p *pane) {
 	}
 	if len(ps) == 0 {
 		delete(s.open, p.ws)
-		delete(s.claude, p.ws)
 	} else {
 		s.open[p.ws] = ps
-		if s.claude[p.ws].pane == p.ID {
-			delete(s.claude, p.ws)
-		}
 	}
-	_ = p.f.Close()
-	s.mu.Unlock()
-	s.changed()
 }
 
 func (s *sessions) write(id, data string) {
@@ -225,7 +232,6 @@ func (s *sessions) close(ws string) error {
 		hangup(p)
 	}
 	delete(s.open, ws)
-	delete(s.claude, ws)
 	s.mu.Unlock()
 	s.changed()
 	return nil
@@ -253,7 +259,7 @@ func hangup(p *pane) {
 }
 
 // setClaude records the Claude Code state reported by a pane's hook (`grove
-// state`) against its workspace. An empty state clears the mark.
+// state`). An empty state clears the mark.
 func (s *sessions) setClaude(id, state string) error {
 	s.mu.Lock()
 	p, ok := s.panes[id]
@@ -261,27 +267,77 @@ func (s *sessions) setClaude(id, state string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("no pane %s", id)
 	}
-	if state == "" {
-		delete(s.claude, p.ws)
-	} else {
-		s.claude[p.ws] = claudeMark{state: state, pane: id}
-	}
+	p.Claude = state
 	s.mu.Unlock()
 	s.changed()
 	return nil
 }
 
-// snapshot returns the open workspaces' panes and their Claude marks.
+// seen clears a pane's mark once you look at it, if it was asking for you
+// (finished or waiting). A working mark stays.
+func (s *sessions) seen(id string) {
+	s.mu.Lock()
+	p, ok := s.panes[id]
+	cleared := ok && (p.Claude == "idle" || p.Claude == "waiting")
+	if cleared {
+		p.Claude = ""
+	}
+	s.mu.Unlock()
+	if cleared {
+		s.changed()
+	}
+}
+
+// busy reports whether closing a pane would interrupt something: Claude Code
+// working, or a program in the foreground of a shell.
+func (s *sessions) busy(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.panes[id]
+	if !ok || p.f == nil {
+		return false
+	}
+	if p.Kind == "claude" {
+		return p.Claude == "working"
+	}
+	pgrp, err := foreground(p.f)
+	return err == nil && pgrp != p.cmd.Process.Pid
+}
+
+// foreground returns the pty's foreground process group. It goes through
+// SyscallConn because f.Fd() would switch the fd to blocking mode, and then
+// hangup's Close could no longer interrupt the pump's Read.
+func foreground(f *os.File) (int, error) {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var pgrp int
+	var ioErr error
+	if err := rc.Control(func(fd uintptr) { pgrp, ioErr = unix.IoctlGetInt(int(fd), unix.TIOCGPGRP) }); err != nil {
+		return 0, err
+	}
+	return pgrp, ioErr
+}
+
+// markRank orders Claude marks for a workspace's summary: the one that most
+// needs you wins.
+var markRank = map[string]int{"working": 1, "idle": 2, "waiting": 3}
+
+// snapshot returns the open workspaces' panes and each workspace's Claude mark,
+// summarised over its panes.
 func (s *sessions) snapshot() (map[string][]Pane, map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	open := make(map[string][]Pane, len(s.open))
+	claude := map[string]string{}
 	for ws, ps := range s.open {
 		open[ws] = publicPanes(ps)
-	}
-	claude := make(map[string]string, len(s.claude))
-	for ws, m := range s.claude {
-		claude[ws] = m.state
+		for _, p := range ps {
+			if markRank[p.Claude] > markRank[claude[ws]] {
+				claude[ws] = p.Claude
+			}
+		}
 	}
 	return open, claude
 }
@@ -306,6 +362,15 @@ func paneKind(cmd string) string {
 		return "claude"
 	}
 	return "shell"
+}
+
+// paneName is a pane's base tab label: its program's name ("claude",
+// "lazygit"), or the login shell's ("zsh") for "".
+func paneName(cmd string) string {
+	if f := strings.Fields(cmd); len(f) > 0 {
+		return filepath.Base(f[0])
+	}
+	return filepath.Base(userShell())
 }
 
 // userShell is the login shell panes run: $SHELL, else zsh on macOS (its
