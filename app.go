@@ -35,6 +35,10 @@ type App struct {
 	cfgErr string
 	sess   *sessions
 
+	// gitMu serialises Remove and DeleteBranch: Wails runs each call on its own
+	// goroutine, and concurrent `git branch` runs fight over git's ref locks.
+	gitMu sync.Mutex
+
 	mu        sync.Mutex
 	ws        []Workspace
 	initial   string   // workspace to select on first load
@@ -303,39 +307,78 @@ func (a *App) opened(ws Workspace, r Repo) string {
 	return ws.Name
 }
 
-// Remove removes a workspace's worktree, then stops its panes. It returns
-// "dirty" (and removes nothing) when there are uncommitted changes and force is
-// false. The list is not rescanned, so the frontend can still offer to delete
-// the branch; it reloads when the flow ends.
-func (a *App) Remove(name string, force bool) (string, error) {
+// RemoveResult is how a worktree removal went, shown in its sidebar row.
+type RemoveResult struct {
+	Status     string `json:"status"`     // "removed" | "dirty" (nothing removed) | "failed"
+	Reason     string `json:"reason"`     // one line, plain words
+	Detail     string `json:"detail"`     // git's full text, for a tooltip
+	BranchKept string `json:"branchKept"` // "" = deleted or none; "unmerged"; else git's one-line error
+}
+
+// maxDirtyLines caps the uncommitted changes listed in a dirty removal's detail.
+const maxDirtyLines = 20
+
+// Remove removes a workspace's worktree, stops its panes, then safely deletes
+// its branch (git branch -d). With uncommitted changes and !force it removes
+// nothing and reports "dirty". The list is not rescanned; the frontend reloads.
+func (a *App) Remove(name string, force bool) RemoveResult {
 	ws, ok := a.find(name)
 	if !ok {
-		return "", fmt.Errorf("no workspace named %q", name)
+		return RemoveResult{Status: "failed", Reason: fmt.Sprintf("no workspace named %q", name)}
 	}
 	if ws.RepoPath == "" {
-		return "", fmt.Errorf("%s is not a git worktree", name)
+		return RemoveResult{Status: "failed", Reason: "not a git worktree"}
 	}
+	a.gitMu.Lock()
+	defer a.gitMu.Unlock()
 	err := removeWorktree(ws.RepoPath, ws.Dir, force)
-	if !force && errors.Is(err, errWorktreeDirty) {
-		return "dirty", nil
+	var dirty *dirtyError
+	if errors.As(err, &dirty) {
+		r := RemoveResult{Status: "dirty"}
+		r.Reason, r.Detail = explain(dirty.refusal)
+		if n := len(dirty.changes); n > 0 {
+			r.Reason = fmt.Sprintf("%d uncommitted change%s", n, plural(n, "", "s"))
+			list := dirty.changes
+			if n > maxDirtyLines {
+				list = append(list[:maxDirtyLines:maxDirtyLines], fmt.Sprintf("… and %d more", n-maxDirtyLines))
+			}
+			r.Detail += "\n\n" + strings.Join(list, "\n")
+		}
+		return r
 	}
 	if err != nil {
-		return "", err
+		r := RemoveResult{Status: "failed"}
+		r.Reason, r.Detail = explain(err)
+		return r
 	}
 	if a.sess.isOpen(name) {
 		_ = a.sess.close(name)
 	}
-	return "", nil
+	r := RemoveResult{Status: "removed"}
+	switch err := removeBranch(ws.RepoPath, ws.Branch, false); {
+	case errors.Is(err, errBranchUnmerged):
+		r.BranchKept = "unmerged"
+	case err != nil:
+		r.BranchKept, _ = explain(err)
+	}
+	return r
 }
 
-// DeleteBranch safely deletes a branch (git branch -d). It returns "unmerged"
-// when git refused because the branch isn't fully merged.
-func (a *App) DeleteBranch(repoPath, branch string) (string, error) {
-	err := removeBranch(repoPath, branch)
+// DeleteBranch deletes a branch left behind by Remove: safely (git branch -d)
+// or, with force, even when unmerged (-D). It returns why the branch was kept,
+// as RemoveResult.BranchKept does: "" once it is deleted.
+func (a *App) DeleteBranch(repoPath, branch string, force bool) string {
+	a.gitMu.Lock()
+	defer a.gitMu.Unlock()
+	err := removeBranch(repoPath, branch, force)
 	if errors.Is(err, errBranchUnmerged) {
-		return "unmerged", nil
+		return "unmerged"
 	}
-	return "", err
+	if err != nil {
+		reason, _ := explain(err)
+		return reason
+	}
+	return ""
 }
 
 // Branches lists local and remote branches, for autocompletion.

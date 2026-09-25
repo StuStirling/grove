@@ -116,9 +116,12 @@ Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (pl
 
 While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧T act on the highlighted
 worktree; otherwise they act on the one you're in. Dialogs take **Y / N**, ↩ and
-Esc; deleting needs an explicit **Y**. Delete walks through the same steps as
-`grove remove`: confirm, force if the worktree has uncommitted changes, then
-optionally delete its (merged) branch.
+Esc; deleting needs an explicit **Y**. After that one confirm, a delete shows its
+progress in the worktree's own row, and several can run at once. If the worktree
+has uncommitted changes the row says how many and offers **Force remove** or
+**Keep**. Once it is removed, grove deletes its branch if it is merged; an
+unmerged branch is kept, and the row offers **Delete branch** (`git branch -D`,
+after a confirm) until you dismiss it.
 
 New Worktree asks for an **intention** (the worktree dir name), a **branch** and a
 **base** (prefilled from config, autocompleted from the repo's branches). New

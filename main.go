@@ -186,7 +186,7 @@ func removeCmd(args []string) {
 	_ = ipcCall(cfg.socketPath(), ipcReq{Op: "close", Name: found.Name})
 
 	if delBranch {
-		switch err := removeBranch(found.RepoPath, found.Branch); {
+		switch err := removeBranch(found.RepoPath, found.Branch, false); {
 		case errors.Is(err, errBranchUnmerged):
 			fmt.Printf("removed %s; branch %s kept (unmerged)\n", name, found.Branch)
 			return

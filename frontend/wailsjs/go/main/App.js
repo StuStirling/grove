@@ -26,8 +26,8 @@ export function DefaultBase() {
   return window['go']['main']['App']['DefaultBase']();
 }
 
-export function DeleteBranch(arg1, arg2) {
-  return window['go']['main']['App']['DeleteBranch'](arg1, arg2);
+export function DeleteBranch(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DeleteBranch'](arg1, arg2, arg3);
 }
 
 export function Open(arg1) {

@@ -3,7 +3,8 @@ import * as api from '../wailsjs/go/main/App'
 import { EventsOn, WindowSetTitle } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
 import { WorkspaceView, terms } from './Panes'
-import { Sidebar } from './Sidebar'
+import { Sidebar, type RemovalAction } from './Sidebar'
+import * as rm from './removal'
 import { errText, key } from './util'
 
 type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; resolve: (yes: boolean) => void }
@@ -32,12 +33,15 @@ export default function App() {
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState<{ text: string; err?: boolean }>({ text: '' })
   const [fontDelta, setFontDelta] = useState(() => Number(localStorage.getItem(FONT_KEY)) || 0)
+  const [removals, setRemovals] = useState<rm.Removals>({})
   const filterRef = useRef<HTMLInputElement>(null)
   const lastRight = useRef<Record<string, number>>({})
 
   const all = snap?.workspaces ?? []
   const q = filter.trim().toLowerCase()
-  const filtered = q ? all.filter((w) => w.name.toLowerCase().includes(q) || w.branch.toLowerCase().includes(q)) : all
+  // Rows being removed stay in the list, where they were, until they're done.
+  const listed = rm.withRemovals(all, removals)
+  const filtered = q ? listed.filter((w) => w.name.toLowerCase().includes(q) || w.branch.toLowerCase().includes(q)) : listed
   const sel = all.find((w) => w.name === selected)
   const font = {
     family: snap?.fontFamily || MONO,
@@ -79,6 +83,7 @@ export default function App() {
 
   // openWs starts a workspace's panes if needed and switches to it.
   async function openWs(name: string) {
+    if (!rm.usable(removals[name])) return // being removed, or gone
     try {
       const panes = await api.Open(name)
       setSelected(name)
@@ -107,7 +112,10 @@ export default function App() {
 
   // The action target: the list cursor while the sidebar has focus (as the TUI
   // acted on its cursor), else the selected workspace.
-  const target = (): main.WorkspaceInfo | undefined => (listFocused ? filtered[cursor] : sel)
+  const target = (): main.WorkspaceInfo | undefined => {
+    const w = listFocused ? filtered[cursor] : sel
+    return w && rm.usable(removals[w.name]) ? w : undefined
+  }
 
   async function closeWs(ws: main.WorkspaceInfo) {
     if (!ws.open) return say(`${ws.name} is not open`)
@@ -121,27 +129,51 @@ export default function App() {
     }
   }
 
+  // Removal reports in the worktree's own row, not the status bar, and doesn't
+  // block other actions: several can run at once.
   async function deleteWs(ws: main.WorkspaceInfo) {
     if (!ws.repoPath) return say(`${ws.name} is not a git worktree`)
     if (!(await confirm(`Delete worktree ${ws.name}?`, `Removes ${ws.dir} and stops its panes.`, true))) return say('cancelled')
-    let r = await run(`removing ${ws.name}`, () => api.Remove(ws.name, false))
-    if (r === undefined) return
-    if (r === 'dirty') {
-      if (!(await confirm(`${ws.name} has uncommitted changes`, 'Force delete? The changes will be lost.', true))) return say('cancelled')
-      r = await run(`removing ${ws.name}`, () => api.Remove(ws.name, true))
-      if (r === undefined) return
+    setRemovals((rs) => rm.start(rs, ws, Math.max(0, all.findIndex((w) => w.name === ws.name))))
+    await removeRow(ws.name, false)
+  }
+
+  async function removeRow(name: string, force: boolean) {
+    let res: main.RemoveResult
+    try {
+      res = await api.Remove(name, force)
+    } catch (e) {
+      res = { status: 'failed', reason: errText(e), detail: errText(e), branchKept: '' }
     }
-    let done = `removed ${ws.name}`
-    let failed = false
-    if (ws.branch && (await confirm(`Removed ${ws.name}`, `Also delete branch ${ws.branch}?`))) {
-      const b = await run(`deleting branch ${ws.branch}`, () => api.DeleteBranch(ws.repoPath, ws.branch))
-      if (b === 'unmerged') done = `removed ${ws.name}, branch ${ws.branch} unmerged, kept`
-      else if (b === '') done = `removed ${ws.name} and branch ${ws.branch}`
-      else failed = true // error already shown
+    setRemovals((rs) => rm.result(rs, name, res, Date.now()))
+    if (res.status === 'removed') await reload(false) // drop it from menus; its row stays until done
+  }
+
+  async function onRemoval(r: rm.Removal, action: RemovalAction) {
+    const name = r.ws.name
+    switch (action) {
+      case 'keep':
+        return setRemovals((rs) => rm.keep(rs, name))
+      case 'dismiss':
+        return setRemovals((rs) => rm.dismiss(rs, name))
+      case 'force':
+        if (!(await confirm(`Force remove ${name}?`, 'Its uncommitted changes will be lost.', true))) return
+        setRemovals((rs) => rm.force(rs, name))
+        return removeRow(name, true)
+      case 'delete-branch': {
+        const unmerged = r.kind === 'kept' && r.reason === 'unmerged'
+        const detail = unmerged ? "It isn't merged, so its commits will be lost." : 'Commits only on this branch will be lost.'
+        if (!(await confirm(`Delete branch ${r.ws.branch}?`, detail, true))) return
+        setRemovals((rs) => rm.deleting(rs, r))
+        let why: string
+        try {
+          why = await api.DeleteBranch(r.ws.repoPath, r.ws.branch, true)
+        } catch (e) {
+          why = errText(e)
+        }
+        setRemovals((rs) => rm.branchResult(rs, name, why, Date.now()))
+      }
     }
-    await reload(false)
-    setFilter('')
-    if (!failed) say(done)
   }
 
   async function addShell() {
@@ -307,6 +339,14 @@ export default function App() {
   }, [snap])
   useEffect(() => setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1))), [filtered.length])
 
+  // Run removal rows' timers: "Removed." collapsing away, a kept branch's wait.
+  useEffect(() => {
+    const d = rm.nextDeadline(removals)
+    if (d === null) return
+    const t = setTimeout(() => setRemovals((rs) => rm.tick(rs, Math.max(Date.now(), d))), d - Date.now())
+    return () => clearTimeout(t)
+  }, [removals])
+
   // Title the window after the repo, so it's findable among other windows.
   useEffect(() => {
     const repo = sel?.repo || all[0]?.repo
@@ -366,6 +406,9 @@ export default function App() {
         onFilterBlur={() => setListFocused(false)}
         onFilterKey={onFilterKey}
         onOpen={openWs}
+        removals={removals}
+        onRemoval={onRemoval}
+        onHold={(name, held) => setRemovals((rs) => rm.hold(rs, name, held, Date.now()))}
       />
 
       <main className="main">

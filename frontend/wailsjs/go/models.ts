@@ -16,6 +16,24 @@ export namespace main {
 	        this.kind = source["kind"];
 	    }
 	}
+	export class RemoveResult {
+	    status: string;
+	    reason: string;
+	    detail: string;
+	    branchKept: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RemoveResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.reason = source["reason"];
+	        this.detail = source["detail"];
+	        this.branchKept = source["branchKept"];
+	    }
+	}
 	export class ShortcutInfo {
 	    group: string;
 	    label: string;

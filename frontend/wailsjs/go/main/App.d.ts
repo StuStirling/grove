@@ -14,7 +14,7 @@ export function Create(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function DefaultBase():Promise<string>;
 
-export function DeleteBranch(arg1:string,arg2:string):Promise<string>;
+export function DeleteBranch(arg1:string,arg2:string,arg3:boolean):Promise<string>;
 
 export function Open(arg1:string):Promise<Array<main.Pane>>;
 
@@ -26,7 +26,7 @@ export function OpenURL(arg1:string):Promise<void>;
 
 export function Reload():Promise<main.Snapshot>;
 
-export function Remove(arg1:string,arg2:boolean):Promise<string>;
+export function Remove(arg1:string,arg2:boolean):Promise<main.RemoveResult>;
 
 export function Size(arg1:string,arg2:number,arg3:number):Promise<void>;
 

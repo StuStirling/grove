@@ -59,6 +59,20 @@ button kbd { margin-left: 6px; background: transparent; }
 .cl-waiting { color: var(--waiting); font-weight: 700; }
 .cl-idle { color: var(--idle); font-weight: 700; }
 .cl-working { color: var(--dim); }
+/* Removal status, shown in the worktree's own row. */
+.gutter .spinner { margin: 3px 1px 0; }
+.rm-line { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.rm-line.busy { color: var(--waiting); }
+.rm-line.err { color: var(--danger); }
+.rm-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.rm-actions button { padding: 1px 8px; font-size: 12px; border-radius: 5px; }
+.list li.rm-removing, .list li.rm-deleting, .list li.rm-done, .list li.rm-kept { cursor: default; }
+.list li.rm-removing .name, .list li.rm-removing .branch { opacity: 0.5; }
+.list li.rm-done .name, .list li.rm-kept .name, .list li.rm-deleting .name { text-decoration: line-through; color: var(--muted); }
+.list li.rm-failed, .list li.rm-failed:hover { background: rgba(248, 81, 73, 0.12); } /* --danger, translucent */
+/* ~3 lines, then to nothing over COLLAPSE_MS (removal.ts). */
+.list li.rm-done { max-height: 70px; overflow: hidden; transition: max-height 0.2s ease, opacity 0.2s ease, padding 0.2s ease; }
+.list li.rm-done.collapsing { max-height: 0; opacity: 0; padding-top: 0; padding-bottom: 0; }
 
 /* ---- panes ---- */
 .main { grid-row: 1; position: relative; min-width: 0; min-height: 0; }
