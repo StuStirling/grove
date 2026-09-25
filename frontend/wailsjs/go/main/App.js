@@ -38,6 +38,10 @@ export function OpenInTerminal(arg1) {
   return window['go']['main']['App']['OpenInTerminal'](arg1);
 }
 
+export function OpenRepo() {
+  return window['go']['main']['App']['OpenRepo']();
+}
+
 export function OpenURL(arg1) {
   return window['go']['main']['App']['OpenURL'](arg1);
 }

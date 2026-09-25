@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"golang.org/x/term"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
@@ -95,8 +97,8 @@ func fromTerminal() bool {
 	if os.Getenv("devserver") != "" { // set by `wails dev`
 		return false
 	}
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	// A real tty, not merely a character device: Finder hands apps /dev/null.
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 func fail(err error) {

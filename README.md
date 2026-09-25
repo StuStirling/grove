@@ -50,6 +50,11 @@ grove               # opens this repo's grove window
 Run `grove` from any worktree of the repo and you get the same window: it is one
 window per repo. Different repos get their own windows and run side by side.
 
+Opened from Finder, the Dock or Spotlight there is no repo to start in, so grove
+uses the global `~/.config/grove/workspaces.toml` if you have one, and otherwise
+offers **Open Repository… (⌘O)** to pick a repo folder. ⌘O works from any
+window to open (or switch to) another repo's window.
+
 ## Commands
 
 ```
@@ -84,6 +89,7 @@ Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (pl
 | Delete worktree… | ⌘⌫ | Open link | ⌘-click |
 | Reload worktrees | ⌘R | Select over a mouse-aware app | ⌥-drag |
 | Open in external terminal | ⌘⇧T | Keyboard shortcuts | ⌘/ |
+| Open repository (its own window) | ⌘O | | |
 
 While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧T act on the highlighted
 worktree; otherwise they act on the one you're in. Dialogs take **Y / N**, ↩ and

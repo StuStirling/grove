@@ -105,6 +105,8 @@ button kbd { margin-left: 6px; background: transparent; }
 .form fieldset:disabled input { opacity: 0.6; }
 .spinner { flex: none; width: 11px; height: 11px; border: 2px solid var(--border-strong); border-top-color: var(--idle); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.fatal { padding: 40px; }
+.fatal { padding: 40px; max-width: 720px; }
 .fatal h1 { color: var(--idle); font-size: 18px; }
-.fatal pre { white-space: pre-wrap; color: var(--danger); font: 13px ui-monospace, Menlo, monospace; user-select: text; -webkit-user-select: text; }
+.fatal p { color: var(--muted); }
+.fatal code { font: 12px ui-monospace, Menlo, monospace; color: var(--text); }
+.fatal pre { margin-top: 24px; white-space: pre-wrap; color: var(--dim); font: 12px ui-monospace, Menlo, monospace; user-select: text; -webkit-user-select: text; }

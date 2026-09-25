@@ -185,6 +185,8 @@ export default function App() {
     focusPane(sel.name, i)
   }
 
+  const openRepo = () => api.OpenRepo().catch((e) => say(errText(e), true))
+
   function setFont(d: number) {
     setFontDelta(d)
     localStorage.setItem(FONT_KEY, String(d))
@@ -199,6 +201,8 @@ export default function App() {
     const ws = target()
     const need = (f: (w: main.WorkspaceInfo) => unknown) => (ws ? f(ws) : say('no worktree selected'))
     switch (action) {
+      case 'open-repo':
+        return openRepo()
       case 'new':
       case 'checkout':
         if (!snap?.canCreate) return say('no [[repo]] configured to create into')
@@ -311,7 +315,11 @@ export default function App() {
   if (snap?.error) {
     return (
       <div className="fatal">
-        <h1>grove</h1>
+        <h1>No repository open</h1>
+        <p>Pick a repo with a <code>.grove.toml</code> (create one with <code>grove init</code>), or run <code>grove</code> inside a repo.</p>
+        <button className="primary" autoFocus onClick={openRepo}>
+          Open Repository… <kbd>{key(snap, 'Open Repository')}</kbd>
+        </button>
         <pre>{snap.error}</pre>
       </div>
     )

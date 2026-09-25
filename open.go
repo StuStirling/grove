@@ -24,13 +24,14 @@ func showInGUI(cfg *Config, name string, setup bool) error {
 	if !errors.Is(err, errNotRunning) {
 		return err
 	}
-	return spawnGUI(name, setup)
+	return spawnGUI("", name, setup)
 }
 
-// spawnGUI starts `grove gui` detached from this terminal, like `code .`: the
-// shell gets its prompt back and the window outlives the tab. It inherits this
-// process's env and cwd, so it resolves the same config and PATH.
-func spawnGUI(name string, setup bool) error {
+// spawnGUI starts `grove gui` in dir ("" = this process's cwd), detached from
+// this terminal like `code .`: the shell gets its prompt back and the window
+// outlives the tab. It inherits this env, so it resolves the same PATH, and
+// the config of the repo it starts in.
+func spawnGUI(dir, name string, setup bool) error {
 	exe, err := groveExe()
 	if err != nil {
 		return err
@@ -43,6 +44,7 @@ func spawnGUI(name string, setup bool) error {
 		args = append(args, name)
 	}
 	c := exec.Command(exe, args...)
+	c.Dir = dir
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return c.Start()
 }
@@ -102,7 +104,11 @@ func fixPath() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// The marker skips anything an interactive rc file prints first.
-	out, _ := exec.CommandContext(ctx, userShell(), "-l", "-i", "-c", `printf '`+marker+`%s' "$PATH"`).Output()
+	c := exec.CommandContext(ctx, userShell(), "-l", "-i", "-c", `printf '`+marker+`%s' "$PATH"`)
+	// Background jobs an rc file starts can hold stdout open past the timeout;
+	// stop waiting on them instead of hanging startup.
+	c.WaitDelay = time.Second
+	out, _ := c.Output()
 	if _, p, ok := strings.Cut(string(out), marker); ok && strings.TrimSpace(p) != "" {
 		_ = os.Setenv("PATH", strings.TrimSpace(p))
 	}

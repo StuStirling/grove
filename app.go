@@ -368,6 +368,24 @@ func (a *App) OpenInTerminal(name string) error {
 // OpenURL opens a link clicked in a pane in the default browser.
 func (a *App) OpenURL(url string) { wr.BrowserOpenURL(a.ctx, url) }
 
+// OpenRepo picks a repository folder and opens its grove window. Each window is
+// tied to one repo's config, so this starts `grove gui` there; that process
+// focuses the repo's existing window if one is open. A window with no repo
+// (launched from Finder) closes, handing over to the new one.
+func (a *App) OpenRepo() error {
+	dir, err := wr.OpenDirectoryDialog(a.ctx, wr.OpenDialogOptions{Title: "Open Repository"})
+	if err != nil || dir == "" {
+		return err
+	}
+	if err := spawnGUI(dir, "", false); err != nil {
+		return err
+	}
+	if a.cfgErr != "" {
+		wr.Quit(a.ctx)
+	}
+	return nil
+}
+
 // ---- menu and shortcuts ----
 
 // shortcut is one menu command. The menu is the single source of shortcuts: its
@@ -385,6 +403,8 @@ var (
 )
 
 var shortcuts = []shortcut{
+	{"File", "Open Repository…", "open-repo", "o", cmdMod},
+	{"File", "", "", "", nil},
 	{"File", "New Worktree…", "new", "n", cmdMod},
 	{"File", "New Worktree from Branch…", "checkout", "n", shiftMod},
 	{"File", "", "", "", nil},

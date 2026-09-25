@@ -20,6 +20,8 @@ export function Open(arg1:string):Promise<Array<main.Pane>>;
 
 export function OpenInTerminal(arg1:string):Promise<void>;
 
+export function OpenRepo():Promise<void>;
+
 export function OpenURL(arg1:string):Promise<void>;
 
 export function Reload():Promise<main.Snapshot>;
