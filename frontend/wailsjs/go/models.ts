@@ -3,6 +3,7 @@ export namespace main {
 	export class Pane {
 	    id: string;
 	    cmd: string;
+	    kind: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Pane(source);
@@ -12,6 +13,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.cmd = source["cmd"];
+	        this.kind = source["kind"];
 	    }
 	}
 	export class ShortcutInfo {

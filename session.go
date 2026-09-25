@@ -16,8 +16,9 @@ import (
 
 // Pane is one terminal in a workspace's layout, as the frontend sees it.
 type Pane struct {
-	ID  string `json:"id"`
-	Cmd string `json:"cmd"` // configured command; "" = login shell
+	ID   string `json:"id"`
+	Cmd  string `json:"cmd"`  // configured command; "" = login shell
+	Kind string `json:"kind"` // "claude" | "shell" (a login shell or any other command)
 }
 
 // pane is a Pane plus its process. The process starts lazily, on the frontend's
@@ -91,7 +92,7 @@ func (s *sessions) ensure(ws Workspace, setup string) []Pane {
 // newPane registers a pane; callers hold s.mu.
 func (s *sessions) newPane(ws, dir, cmd string) *pane {
 	s.nextID++
-	p := &pane{Pane: Pane{ID: fmt.Sprintf("p%d", s.nextID), Cmd: cmd}, ws: ws, dir: dir}
+	p := &pane{Pane: Pane{ID: fmt.Sprintf("p%d", s.nextID), Cmd: cmd, Kind: paneKind(cmd)}, ws: ws, dir: dir}
 	s.panes[p.ID] = p
 	return p
 }
@@ -296,6 +297,15 @@ func (s *sessions) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.open)
+}
+
+// paneKind is "claude" for a command that runs Claude Code (e.g. "claude",
+// "claude --model opus", "/usr/local/bin/claude"), else "shell".
+func paneKind(cmd string) string {
+	if f := strings.Fields(cmd); len(f) > 0 && filepath.Base(f[0]) == "claude" {
+		return "claude"
+	}
+	return "shell"
 }
 
 // userShell is the login shell panes run: $SHELL, else zsh on macOS (its

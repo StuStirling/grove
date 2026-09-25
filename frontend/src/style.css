@@ -81,6 +81,13 @@ button kbd { margin-left: 6px; background: transparent; }
 .placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
 .placeholder .hint { color: var(--dim); }
 
+/* ---- popup menus ---- */
+.menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 190px; padding: 4px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.menu button { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 5px 10px; background: transparent; border: 0; border-radius: 5px; text-align: left; }
+.menu button.danger { color: var(--danger); background: transparent; }
+.menu button:hover, .menu button:focus { background: var(--surface-2); outline: none; }
+.menu-divider { height: 1px; margin: 4px 2px; background: var(--border); }
+
 /* ---- status bar ---- */
 .status { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 16px; padding: 4px 12px; border-top: 1px solid var(--border); background: var(--surface); color: var(--dim); font-size: 12px; min-height: 24px; }
 .status .msg { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

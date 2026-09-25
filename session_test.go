@@ -145,3 +145,11 @@ func TestPaneEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestPaneKind(t *testing.T) {
+	for cmd, want := range map[string]string{"claude": "claude", " claude --model opus": "claude", "/opt/bin/claude": "claude", "": "shell", "lazygit": "shell", "claude-foo": "shell"} {
+		if got := paneKind(cmd); got != want {
+			t.Errorf("paneKind(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}

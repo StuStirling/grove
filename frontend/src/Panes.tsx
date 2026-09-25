@@ -7,6 +7,7 @@ import '@xterm/xterm/css/xterm.css'
 import { OpenURL, Size, Write } from '../wailsjs/go/main/App'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
+import { startDrag } from './util'
 
 // Live xterm instances by pane id, so the app can move focus between panes.
 export const terms = new Map<string, Terminal>()
@@ -122,29 +123,15 @@ export function WorkspaceView(props: {
   const right = panes.slice(1)
   const w = weights.length === right.length ? weights : right.map(() => 1 / right.length)
 
-  const drag = (e: React.PointerEvent, move: (ev: PointerEvent) => void) => {
-    e.preventDefault()
-    const target = e.currentTarget as HTMLElement
-    target.setPointerCapture(e.pointerId)
-    document.body.classList.add('dragging')
-    const up = () => {
-      target.removeEventListener('pointermove', move)
-      target.removeEventListener('pointerup', up)
-      document.body.classList.remove('dragging')
-    }
-    target.addEventListener('pointermove', move)
-    target.addEventListener('pointerup', up)
-  }
-
   const dragLeft = (e: React.PointerEvent) =>
-    drag(e, (ev) => {
+    startDrag(e, (ev) => {
       const r = rootRef.current!.getBoundingClientRect()
       setLeft(Math.min(85, Math.max(15, ((ev.clientX - r.left) / r.width) * 100)))
     })
 
   // Divider i sits between right panes i and i+1.
   const dragRight = (i: number) => (e: React.PointerEvent) =>
-    drag(e, (ev) => {
+    startDrag(e, (ev) => {
       const r = colRef.current!.getBoundingClientRect()
       const y = (ev.clientY - r.top) / r.height
       const start = w.slice(0, i).reduce((a, b) => a + b, 0)
