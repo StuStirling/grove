@@ -59,12 +59,6 @@ func parseWorktrees(out string) []worktree {
 	return wts
 }
 
-// sanitizeName makes a string safe as a tmux session name (no "." or ":").
-func sanitizeName(s string) string {
-	r := strings.NewReplacer(".", "-", ":", "-", " ", "-")
-	return r.Replace(s)
-}
-
 // branchList returns local + remote branch names of the repo, for base-branch
 // autocompletion (e.g. "f/MON-3446-halfscreen/2-discounts", "origin/develop").
 func branchList(repoPath string) []string {
@@ -116,9 +110,9 @@ func branchExists(repoPath, branch string) bool {
 // workspaceFor builds the Workspace for a worktree at path on branch, matching
 // how expandRepo derives names/panes from a repo.
 func workspaceFor(r Repo, path, branch string) Workspace {
-	name := sanitizeName(filepath.Base(path))
+	name := filepath.Base(path)
 	if r.Prefix != "" {
-		name = sanitizeName(r.Prefix) + "/" + name
+		name = r.Prefix + "/" + name
 	}
 	repoName := strings.TrimSpace(r.Prefix)
 	if repoName == "" {
@@ -129,10 +123,9 @@ func workspaceFor(r Repo, path, branch string) Workspace {
 
 // resolveWorktreeRoot returns the repo path and the worktree root as absolute
 // paths. A relative worktree_root (e.g. "../worktrees") is anchored to the repo,
-// NOT the process cwd: grove creates worktrees from inside other worktrees'
-// switcher panes, whose cwd is an unrelated worktree, so a cwd-relative root
-// would resolve wrongly, land the tmux panes in a bogus directory, and leave the
-// switcher unable to find the repo's config.
+// NOT the process cwd: `grove new` is often run from a pane of another worktree,
+// whose cwd is unrelated, so a cwd-relative root would resolve wrongly and land
+// the new worktree (and its panes) in a bogus directory.
 func resolveWorktreeRoot(r Repo) (repoPath, root string, err error) {
 	repoPath = expandPath(r.Path)
 	if abs, e := filepath.Abs(repoPath); e == nil {

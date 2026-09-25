@@ -5,23 +5,26 @@ import (
 	"fmt"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
-const usage = `grove - tmux git-worktree switcher
+const usage = `grove - git-worktree switcher
 
 usage:
-  grove                        launch the TUI switcher (attaches in this tab)
-  grove open <name>            attach a workspace in the current tab
-  grove open <name> -w         open the workspace in a new terminal window
-  grove new <intention> <br>   create a worktree (branch <br>) and open it
+  grove                        open this repo's grove window (focuses it if open)
+  grove open <name>            open a workspace in the grove window
+  grove open <name> -w         open a workspace in an external terminal (uses ` + "`terminal`" + `)
+  grove new <intention> <br> [base]
+                               create a worktree (new branch <br> from base) and open it
   grove remove <name>          remove a worktree (--force if dirty, --branch to delete its branch)
   grove init                   write a .grove.toml template in the current repo
   grove list                   print workspace names
-  grove doctor                 check prerequisites (tmux, git)
+  grove state <state>          report Claude Code state from a pane: working|waiting|idle|clear
+  grove gui [name]             run the window in the foreground (for debugging)
+  grove doctor                 check prerequisites
   grove version                print the version
   grove help                   show this help
 `
@@ -29,11 +32,25 @@ usage:
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
-		runTUI()
+		if !fromTerminal() {
+			runGUI("", false) // Finder/Dock launch, or `wails dev`
+			return
+		}
+		fail(showInGUI(mustConfig(), "", false))
 		return
 	}
 
 	switch args[0] {
+	case "gui":
+		name, setup := "", false
+		for _, a := range args[1:] {
+			if a == "--setup" {
+				setup = true
+			} else {
+				name = a
+			}
+		}
+		runGUI(name, setup)
 	case "doctor":
 		os.Exit(doctor())
 	case "version", "--version", "-v":
@@ -41,10 +58,7 @@ func main() {
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	case "init":
-		if err := initConfig(); err != nil {
-			fmt.Fprintf(os.Stderr, "grove: %v\n", err)
-			os.Exit(1)
-		}
+		fail(initConfig())
 	case "list":
 		for _, ws := range mustConfig().resolve() {
 			fmt.Println(ws.Name)
@@ -58,24 +72,40 @@ func main() {
 		}
 		cfg := mustConfig()
 		if len(cfg.Repo) == 0 {
-			fmt.Fprintln(os.Stderr, "grove: no [[repo]] configured to create into")
-			os.Exit(1)
+			fail(errors.New("no [[repo]] configured to create into"))
 		}
 		base := ""
 		if len(args) > 3 {
 			base = args[3]
 		}
-		ws, err := createAndOpen(cfg.Repo[0], args[1], args[2], base)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "grove: %v\n", err)
-			os.Exit(1)
-		}
+		ws, err := createWorktree(cfg.Repo[0], args[1], args[2], base)
+		fail(err)
 		fmt.Printf("created %s at %s (branch %s)\n", ws.Name, ws.Dir, ws.Branch)
+		fail(showInGUI(cfg, ws.Name, true))
 	case "remove":
 		removeCmd(args[1:])
+	case "state":
+		stateCmd(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "grove: unknown command %q\n\n%s", args[0], usage)
 		os.Exit(2)
+	}
+}
+
+// fromTerminal reports whether grove was started from an interactive shell (so
+// it should hand off to a detached window) rather than by Finder or `wails dev`.
+func fromTerminal() bool {
+	if os.Getenv("devserver") != "" { // set by `wails dev`
+		return false
+	}
+	// A real tty, not merely a character device: Finder hands apps /dev/null.
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+func fail(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "grove: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -97,20 +127,13 @@ func openCmd(args []string) {
 	cfg := mustConfig()
 	found := findWorkspace(cfg, name)
 	if found == nil {
-		fmt.Fprintf(os.Stderr, "grove: no workspace named %q\n", name)
-		os.Exit(1)
+		fail(fmt.Errorf("no workspace named %q", name))
 	}
-
-	var err error
 	if newWindow {
-		err = openWindow(*found, cfg.Terminal)
-	} else {
-		err = attachHere(*found)
+		fail(openInTerminal(*found, cfg.Terminal))
+		return
 	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "grove: %v\n", err)
-		os.Exit(1)
-	}
+	fail(showInGUI(cfg, found.Name, false))
 }
 
 // findWorkspace returns the resolved workspace with the given name, or nil.
@@ -144,26 +167,23 @@ func removeCmd(args []string) {
 		fmt.Fprintln(os.Stderr, "grove remove: needs a workspace name")
 		os.Exit(2)
 	}
-	found := findWorkspace(mustConfig(), name)
+	cfg := mustConfig()
+	found := findWorkspace(cfg, name)
 	if found == nil {
-		fmt.Fprintf(os.Stderr, "grove: no workspace named %q\n", name)
-		os.Exit(1)
+		fail(fmt.Errorf("no workspace named %q", name))
 	}
 	if found.RepoPath == "" {
-		fmt.Fprintf(os.Stderr, "grove: %s is not a git worktree\n", name)
-		os.Exit(1)
+		fail(fmt.Errorf("%s is not a git worktree", name))
 	}
 
 	switch err := removeWorktree(found.RepoPath, found.Dir, force); {
 	case errors.Is(err, errWorktreeDirty):
-		fmt.Fprintf(os.Stderr, "grove: %s has uncommitted changes; re-run with --force\n", name)
-		os.Exit(1)
-	case err != nil:
-		fmt.Fprintf(os.Stderr, "grove: %v\n", err)
-		os.Exit(1)
+		fail(fmt.Errorf("%s has uncommitted changes; re-run with --force", name))
+	default:
+		fail(err)
 	}
-	// Tidy up the tmux window if one is open; absence is fine.
-	_ = closeWindow(found.Name)
+	// Stop its panes if the grove window has it open; absence is fine.
+	_ = ipcCall(cfg.socketPath(), ipcReq{Op: "close", Name: found.Name})
 
 	if delBranch {
 		switch err := removeBranch(found.RepoPath, found.Branch); {
@@ -171,8 +191,7 @@ func removeCmd(args []string) {
 			fmt.Printf("removed %s; branch %s kept (unmerged)\n", name, found.Branch)
 			return
 		case err != nil:
-			fmt.Fprintf(os.Stderr, "grove: removed %s but %v\n", name, err)
-			os.Exit(1)
+			fail(fmt.Errorf("removed %s but %v", name, err))
 		default:
 			fmt.Printf("removed %s and branch %s\n", name, found.Branch)
 			return
@@ -181,35 +200,33 @@ func removeCmd(args []string) {
 	fmt.Printf("removed %s\n", name)
 }
 
-func runTUI() {
-	embedded := os.Getenv("TMUX") != ""
-	// Alt-screen so the switcher pane has no scrollback: with tmux `mouse on`, a
-	// wheel scroll over an inline (non-alt-screen) pane drops tmux into copy-mode,
-	// which then swallows the arrow/Enter keys and navigation appears dead until
-	// the user hits Escape. Alt-screen panes don't scroll into copy-mode.
-	// ReportFocus so the switcher rescans worktrees the moment its pane regains
-	// focus (e.g. after switching to that window), instead of waiting for the
-	// 1.5s poll or a manual reload.
-	p := tea.NewProgram(newModel(mustConfig(), embedded), tea.WithAltScreen(), tea.WithReportFocus())
-	final, err := p.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "grove: %v\n", err)
-		os.Exit(1)
+// stateCmd implements `grove state <state>`, run by Claude Code hooks inside a
+// pane to mark its workspace in the sidebar. Outside a grove pane it does
+// nothing, so the hooks are safe in any terminal.
+func stateCmd(args []string) {
+	pane, sock := os.Getenv("GROVE_PANE"), os.Getenv("GROVE_SOCK")
+	if pane == "" || sock == "" {
+		return
 	}
-	// Launcher mode: after the TUI restores the terminal, attach in this tab.
-	if fm, ok := final.(model); ok && fm.chosen != nil {
-		if err := attachHere(*fm.chosen); err != nil {
-			fmt.Fprintf(os.Stderr, "grove: %v\n", err)
-			os.Exit(1)
-		}
+	state := ""
+	if len(args) > 0 {
+		state = args[0]
+	}
+	switch state {
+	case "working", "waiting", "idle":
+	case "", "clear":
+		state = ""
+	default:
+		fmt.Fprintf(os.Stderr, "grove state: unknown state %q (want working, waiting, idle or clear)\n", state)
+		os.Exit(2)
+	}
+	if err := ipcCall(sock, ipcReq{Op: "state", Pane: pane, State: state}); err != nil && !errors.Is(err, errNotRunning) {
+		fail(err)
 	}
 }
 
 func mustConfig() *Config {
 	cfg, err := loadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "grove: %v\n", err)
-		os.Exit(1)
-	}
+	fail(err)
 	return cfg
 }

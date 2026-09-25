@@ -36,20 +36,6 @@ detached
 	}
 }
 
-func TestSanitizeName(t *testing.T) {
-	cases := map[string]string{
-		"kabul":        "kabul",
-		"gradle-9.5.0": "gradle-9-5-0",
-		"a:b c":        "a-b-c",
-		"f/MON-3446/2": "f/MON-3446/2", // slashes preserved
-	}
-	for in, want := range cases {
-		if got := sanitizeName(in); got != want {
-			t.Errorf("sanitizeName(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestWorkspaceFor(t *testing.T) {
 	// Discovered worktrees carry the owning repo path (used by remove); the
 	// prefix is folded into the name.

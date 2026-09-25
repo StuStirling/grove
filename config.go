@@ -33,12 +33,19 @@ type Repo struct {
 
 // Config is the whole workspaces.toml file.
 type Config struct {
-	// Terminal is a command template for opening a new terminal window (the -w
-	// path). It may contain a {cmd} placeholder, e.g. "ghostty -e {cmd}",
-	// "wezterm start -- {cmd}", "kitty {cmd}", "alacritty -e {cmd}".
-	Terminal  string      `toml:"terminal"`
-	Workspace []Workspace `toml:"workspace"`
-	Repo      []Repo      `toml:"repo"`
+	// Terminal is a command template for opening a worktree in an external
+	// terminal window ("Open in Terminal", `grove open -w`). {cmd} is replaced
+	// with a shell started in the worktree and {dir} with the worktree path, e.g.
+	// "ghostty -e {cmd}", "wezterm start -- {cmd}", "kitty {cmd}".
+	Terminal   string      `toml:"terminal"`
+	FontFamily string      `toml:"font_family"` // terminal font; empty = system monospace
+	FontSize   int         `toml:"font_size"`   // terminal font size in px; 0 = default
+	Workspace  []Workspace `toml:"workspace"`
+	Repo       []Repo      `toml:"repo"`
+
+	// Path is the config file this was loaded from. It keys the GUI instance, so
+	// every grove process for the same repo finds the same running window.
+	Path string `toml:"-"`
 }
 
 // localConfigName is the repo-local config filename.
@@ -89,8 +96,8 @@ func findLocalConfig() string {
 
 // mainWorktreeConfig returns the .grove.toml of the repository's MAIN worktree,
 // or "". This lets linked worktrees (which each have their own .git file and no
-// committed config) share the config that lives in the main worktree — e.g. the
-// switcher pane that grove runs inside every worktree window.
+// committed config) share the config that lives in the main worktree, so `grove`
+// run from any worktree (or from a pane) finds the same config and window.
 func mainWorktreeConfig() string {
 	out, err := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
 	if err != nil {
@@ -148,14 +155,11 @@ func loadConfig() (*Config, error) {
 			localConfigName, path)
 	}
 
-	// Key the tmux session to this config so different repos run concurrently in
-	// separate tabs instead of colliding in one shared "grove" session.
-	sessionName = sessionNameFor(path)
-
 	var cfg Config
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
+	cfg.Path = path
 
 	// A repo with no explicit path defaults to the config's own directory, so a
 	// repo-local .grove.toml needs no path.
@@ -174,24 +178,32 @@ func loadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
-// sessionNameFor derives a stable, per-config tmux session name. Every grove
-// instance for the same repo resolves to the same config path (linked worktrees
-// fall back to the main worktree's config), so they share a session; different
-// repos hash to different names. The repo-dir basename keeps it readable; the
-// path hash keeps it unique when two repos share a basename.
-func sessionNameFor(path string) string {
-	abs, err := filepath.Abs(path)
+// socketPath derives the stable, per-config IPC socket of the GUI instance.
+// Every grove process for the same repo resolves to the same config path (linked
+// worktrees fall back to the main worktree's config), so they reach the same
+// window; different repos hash to different sockets and run concurrently.
+func (c *Config) socketPath() string {
+	abs, err := filepath.Abs(c.Path)
 	if err != nil {
-		abs = path
+		abs = c.Path
 	}
-	// Canonicalise symlinks so the launcher (resolving via os.Getwd) and the
-	// embedded panes (resolving via git --git-common-dir) hash to the same name.
+	// Canonicalise symlinks so a launcher resolving via os.Getwd and one resolving
+	// via git --git-common-dir hash to the same socket.
 	if real, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = real
 	}
 	sum := sha256.Sum256([]byte(abs))
-	base := sanitizeName(filepath.Base(filepath.Dir(abs)))
-	return fmt.Sprintf("grove-%s-%x", base, sum[:3])
+	// Only the hash goes in the name: unix socket paths are capped at ~104 bytes.
+	return filepath.Join(socketDir(), fmt.Sprintf("grove-%x.sock", sum[:4]))
+}
+
+// socketDir holds the per-repo GUI sockets. The user cache dir is stable across
+// launch contexts (terminal, Finder), unlike TMPDIR.
+func socketDir() string {
+	if d, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(d, "grove")
+	}
+	return os.TempDir()
 }
 
 // initConfig writes a .grove.toml template at the repo root (or cwd if not in a
@@ -236,20 +248,25 @@ func sampleConfig() string {
 	return `# grove repo-local config (.grove.toml).
 # panes: one command per pane (empty string = plain shell).
 
-# Command to open a NEW terminal window (only used by 'grove open <name> -w').
-# {cmd} is replaced with the attach command. Examples:
-#   "ghostty -e {cmd}"  "wezterm start -- {cmd}"  "kitty {cmd}"  "alacritty -e {cmd}"
+# Command to open a worktree in an external terminal ("Open in Terminal",
+# 'grove open <name> -w'). {cmd} = a shell in the worktree, {dir} = its path:
+#   macOS: "open -na Ghostty --args --working-directory={dir}"
+#   Linux: "ghostty -e {cmd}"  "wezterm start -- {cmd}"  "kitty {cmd}"  "alacritty -e {cmd}"
 terminal = ""
+
+# Terminal font for the panes (defaults: system monospace, 13px).
+# font_family = "JetBrains Mono"
+# font_size   = 13
 
 # [[repo]] = auto-discover one workspace per git worktree.
 [[repo]]
 # path        = ""                          # defaults to this repo (this file's dir)
 prefix        = ""                          # optional name prefix
-panes         = ["claude", "", "lazygit"]   # first = big middle pane; rest = right column
-# New-worktree settings (used by the "n" action in the grove pane):
-worktree_root = ""                          # REQUIRED for "n": dir for new worktrees, e.g. "~/code/myrepo-worktrees"
+panes         = ["claude", ""]              # first = big pane; rest = right column ("" = your shell)
+# New-worktree settings (used by New Worktree, cmd-N):
+worktree_root = ""                          # REQUIRED to create: dir for new worktrees, e.g. "~/code/myrepo-worktrees"
 base          = "origin/main"               # new branch start-point (fetched first)
-setup         = ""                          # e.g. "./scripts/bootstrap.sh" — run in the shell pane after create
+setup         = ""                          # e.g. "./scripts/bootstrap.sh": run in the shell pane after create
 
 # [[workspace]] = a manual one-off entry.
 # [[workspace]]
