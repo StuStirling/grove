@@ -227,7 +227,7 @@ export default function App() {
       await api.CloseTab(id)
       focusNow()
     } catch (e) {
-      say(errText(e), true)
+      if (errText(e) !== `no pane ${id}`) say(errText(e), true) // else it exited meanwhile: closed already
     }
   }
 
@@ -387,12 +387,24 @@ export default function App() {
     hadModal.current = !!modal
   }, [modal])
 
-  // Keyboard focus follows the focused tab: when another tab comes to the front
-  // (picked, opened, or its neighbour closed) or an action asks (focusNow), its
-  // terminal takes focus, unless you're typing in the worktree filter.
+  // Keyboard focus follows the focused tab. An action that asks (focusNow) always
+  // puts it there, from the worktree filter too. A tab that comes to the front by
+  // itself (its neighbour exited) takes it only from the page or the worktree's
+  // own area, never from the sidebar, a menu or a dialog.
   useEffect(() => {
-    if (selTab && document.activeElement !== filterRef.current) focusTerm(selTab)
-  }, [selTab, focusReq])
+    if (selTab) focusTerm(selTab)
+  }, [focusReq])
+  useEffect(() => {
+    const a = document.activeElement
+    if (selTab && (!a || a === document.body || (a.closest('.workspace') && !a.closest('.menu')))) focusTerm(selTab)
+  }, [selTab])
+
+  // Closing a worktree's last tab takes focus with its terminal: give it to the
+  // empty state's first button.
+  const emptyRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!sel?.open && document.activeElement === document.body) emptyRef.current?.focus()
+  }, [sel?.name, sel?.open])
 
   // The tab in front of you has been seen: clear its "Claude wants you" mark
   // when it comes to the front, or when a mark arrives while it is there.
@@ -529,7 +541,7 @@ export default function App() {
                 <WorkspaceHeader ws={sel} />
                 <p>No sessions open in this worktree.</p>
                 <div className="actions">
-                  <button onClick={() => newTab(sel.name, 'claude')}>
+                  <button ref={emptyRef} onClick={() => newTab(sel.name, 'claude')}>
                     New Claude tab <kbd>{key(snap, 'New Claude Tab')}</kbd>
                   </button>
                   <button onClick={() => newTab(sel.name, 'shell')}>

@@ -70,13 +70,17 @@ function TermPane({ pane, font, dim, onFocus }: { pane: main.Pane; font: Font; d
     term.textarea?.addEventListener('focus', focus)
 
     let last = ''
+    let sized = Promise.resolve()
     fitRef.current = () => {
       if (el.clientWidth === 0 || el.clientHeight === 0) return
       fit.fit()
       const key = `${term.cols}x${term.rows}`
       if (key !== last) {
         last = key
-        Size(pane.id, term.cols, term.rows).catch(() => {})
+        // One at a time: each Wails call runs on its own goroutine, so a drag's
+        // sizes could otherwise land out of order.
+        const [cols, rows] = [term.cols, term.rows]
+        sized = sized.then(() => Size(pane.id, cols, rows)).catch(() => {})
       }
     }
     const ro = new ResizeObserver(() => fitRef.current())
@@ -149,6 +153,17 @@ export function WorkspaceView(props: {
   const { ws, layout: l, visible, font, snap, onLayout, onRatio } = props
   const [menu, setMenu] = useState<{ pane: number; at: { x: number; y: number } } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0) // for clamp, as the window resizes
+  useEffect(() => {
+    const el = rootRef.current!
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // A menu left open on another worktree doesn't come back with this one.
+  useEffect(() => {
+    if (!visible) setMenu(null)
+  }, [visible])
   const byId = new Map((ws.panes ?? []).map((p) => [p.id, p]))
   const paneOf = (id: string) => l.panes.findIndex((p) => p.tabs.includes(id))
   const split = l.panes.length > 1
@@ -157,12 +172,18 @@ export function WorkspaceView(props: {
   const col = (i: number) => (l.zoom && i === l.focus ? '1 / -1' : i === 0 ? '1' : '3')
   const away = (i: number) => l.zoom && i !== l.focus
   const dim = (i: number) => split && i !== l.focus
+  const side = (i: number) => (i === 0 ? 'left' : 'right')
+  // The "+" menu's pane, which may have gone (emptied and unsplit) while it was open.
+  const menuPane = Math.min(menu?.pane ?? 0, l.panes.length - 1)
 
   // Each pane stays at least MIN_PANE px wide (both halves, if narrower than that).
+  // A saved ratio is clamped as drawn, so a narrow window doesn't rewrite it.
   const clamp = (r: number) => {
-    const min = Math.min(0.5, MIN_PANE / (rootRef.current?.clientWidth || MIN_PANE * 2))
+    const w = width || rootRef.current?.clientWidth
+    const min = w ? Math.min(0.5, MIN_PANE / w) : 0
     return Math.min(1 - min, Math.max(min, r))
   }
+  const ratio = clamp(l.ratio)
   const drag = (e: React.PointerEvent) => {
     let r = l.ratio
     startDrag(
@@ -177,7 +198,7 @@ export function WorkspaceView(props: {
   const nudge = (e: React.KeyboardEvent) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
     e.preventDefault()
-    onRatio(clamp(l.ratio + (e.key === 'ArrowLeft' ? -0.02 : 0.02)), true)
+    onRatio(clamp(ratio + (e.key === 'ArrowLeft' ? -0.02 : 0.02)), true)
   }
 
   // Tabs drag to reorder, or onto the other pane's tab bar to move there.
@@ -198,7 +219,7 @@ export function WorkspaceView(props: {
     <div
       className={'workspace' + (visible ? '' : ' hidden')}
       ref={rootRef}
-      style={{ gridTemplateColumns: split ? `minmax(0, ${l.ratio}fr) 5px minmax(0, ${1 - l.ratio}fr)` : 'minmax(0, 1fr)' }}
+      style={{ gridTemplateColumns: split ? `minmax(0, ${ratio}fr) 5px minmax(0, ${1 - ratio}fr)` : 'minmax(0, 1fr)' }}
     >
       <WorkspaceHeader ws={ws} />
       {l.panes.map((p, i) => (
@@ -245,9 +266,10 @@ export function WorkspaceView(props: {
           </div>
           <button
             className="tool"
-            aria-label="New tab"
+            aria-label={split ? `New tab in ${side(i)} pane` : 'New tab'}
             aria-haspopup="menu"
-            title="New tab"
+            aria-expanded={menu?.pane === i}
+            title={split ? `New tab in ${side(i)} pane` : 'New tab'}
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect()
               setMenu({ pane: i, at: { x: r.left, y: r.bottom + 2 } })
@@ -266,7 +288,12 @@ export function WorkspaceView(props: {
                 >
                   {i === 0 ? '→' : '←'}
                 </button>
-                <button className="tool" aria-label="Close pane (its tabs move to the other pane)" title="Close pane (its tabs move to the other pane)" onClick={() => onLayout((l) => closePane(l, i))}>
+                <button
+                  className="tool"
+                  aria-label={`Close ${side(i)} pane (its tabs move to the other pane)`}
+                  title={`Close ${side(i)} pane (its tabs move to the other pane)`}
+                  onClick={() => onLayout((l) => closePane(l, i))}
+                >
                   ⊟
                 </button>
               </>
@@ -284,7 +311,7 @@ export function WorkspaceView(props: {
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize panes"
-          aria-valuenow={Math.round(l.ratio * 100)}
+          aria-valuenow={Math.round(ratio * 100)}
           tabIndex={0}
           style={{ visibility: l.zoom ? 'hidden' : undefined }}
           onPointerDown={drag}
@@ -312,8 +339,8 @@ export function WorkspaceView(props: {
           at={menu.at}
           onClose={() => setMenu(null)}
           items={[
-            { label: 'New Claude tab', keys: key(snap, 'New Claude Tab'), onSelect: () => props.onNewTab('claude', menu.pane) },
-            { label: 'New shell', keys: key(snap, 'New Shell'), onSelect: () => props.onNewTab('shell', menu.pane) },
+            { label: 'New Claude tab', keys: key(snap, 'New Claude Tab'), onSelect: () => props.onNewTab('claude', menuPane) },
+            { label: 'New shell', keys: key(snap, 'New Shell'), onSelect: () => props.onNewTab('shell', menuPane) },
           ]}
         />
       )}
