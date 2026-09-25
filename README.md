@@ -19,33 +19,55 @@ is waiting for you. Works on macOS and Linux.
 
 ## Requirements
 
+- macOS 12+ or Linux
 - git
 - whatever you put in `panes` (e.g. `claude`)
-- Linux only: WebKitGTK (`libwebkit2gtk-4.1`)
+- Linux only: WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian/Ubuntu)
 
 ## Install
 
-Homebrew (macOS):
+**Homebrew (macOS)** installs `grove.app` to `/Applications` and `grove` onto your
+PATH:
 
 ```sh
 brew install --cask stustirling/tap/grove
 ```
 
-From source (needs Go, Node and the [Wails](https://wails.io) CLI:
-`go install github.com/wailsapp/wails/v2/cmd/wails@latest`):
+**Release download:** grab `grove-darwin-universal.zip` (macOS) or
+`grove_<version>_linux_<arch>.tar.gz` from
+[Releases](https://github.com/StuStirling/grove/releases). The macOS app is
+unsigned, so after unzipping it into `/Applications` clear the quarantine flag
+once (Homebrew does this for you):
 
 ```sh
-make install        # grove.app -> /Applications, `grove` -> ~/.local/bin
+xattr -dr com.apple.quarantine /Applications/grove.app
+ln -sf /Applications/grove.app/Contents/MacOS/grove ~/.local/bin/grove   # the CLI
 ```
+
+**From source** needs Go 1.25+, Node 22+ and the [Wails](https://wails.io) CLI
+(`go install github.com/wailsapp/wails/v2/cmd/wails@latest`). On Linux also
+`sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev` (or your distro's
+equivalents).
+
+```sh
+make install        # macOS: grove.app -> /Applications, `grove` -> ~/.local/bin
+                    # Linux: `grove` -> ~/.local/bin
+```
+
+Make sure `~/.local/bin` is on your PATH. Override the locations with
+`make install APPDIR=~/Applications BINDIR=~/bin`.
 
 ## Quick start
 
 ```sh
 cd your-repo
 grove init          # writes a .grove.toml template at the repo root
-$EDITOR .grove.toml
+$EDITOR .grove.toml # set worktree_root (needed to create worktrees) and panes
 grove               # opens this repo's grove window
 ```
+
+For the Claude Code marks in the sidebar, add the hooks from
+[Claude Code status](#claude-code-status).
 
 Run `grove` from any worktree of the repo and you get the same window: it is one
 window per repo. Different repos get their own windows and run side by side.
@@ -61,7 +83,8 @@ window to open (or switch to) another repo's window.
 grove                        open this repo's grove window (focuses it if open)
 grove open <name>            open a workspace in the grove window
 grove open <name> -w         open a workspace in an external terminal (uses `terminal`)
-grove new <intention> <br>   create a worktree (branch <br>) and open it
+grove new <intention> <br> [base]
+                             create a worktree (new branch <br> from base) and open it
 grove remove <name>          remove a worktree (--force if dirty, --branch to delete its branch)
 grove init                   write a .grove.toml template in the current repo
 grove list                   print workspace names
@@ -132,10 +155,11 @@ worktrees use the main worktree's). If none is found it falls back to the global
 
 ```toml
 # Open a worktree in an external terminal (⌘⇧T, `grove open <name> -w`).
-# {cmd} = a shell started in the worktree, {dir} = the worktree path:
-#   "ghostty -e {cmd}"   "wezterm start -- {cmd}"   "kitty {cmd}"   "alacritty -e {cmd}"
-#   "open -na Ghostty --args --working-directory={dir}"
-terminal = "ghostty -e {cmd}"
+# {cmd} = a shell started in the worktree, {dir} = the worktree path.
+#   macOS: "open -na Ghostty --args --working-directory={dir}"
+#          "open -na WezTerm --args start --cwd {dir}"
+#   Linux: "ghostty -e {cmd}"  "wezterm start -- {cmd}"  "kitty {cmd}"  "alacritty -e {cmd}"
+terminal = "open -na Ghostty --args --working-directory={dir}"
 
 font_family = "JetBrains Mono"            # pane font (default: system monospace)
 font_size   = 13                          # pane font size in px
@@ -156,15 +180,18 @@ setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane afte
 ```
 
 `panes` is one command per pane (`""` = your login shell: `$SHELL`, zsh on macOS
-by default). Extra panes stack in the right column, e.g. `["claude", "", "lazygit"]`. When a pane's program
-exits its pane closes, and a worktree closes with its last pane.
+by default). Extra panes stack in the right column, e.g.
+`["claude", "", "lazygit"]`. When a pane's program exits its pane closes, and a
+worktree closes with its last pane. Config is read when the window opens; restart
+grove after editing it.
 
 ## How it works
 
 Each pane is a real terminal (a pty running the command through your `$SHELL`,
 drawn with xterm.js) owned by the grove window. Panes get `TERM=xterm-256color`
-and `GROVE_PANE` / `GROVE_SOCK` / `GROVE_WORKSPACE`, and none of the launching
-terminal's identity (no `TMUX`, `TERM_PROGRAM`, …).
+and `GROVE_PANE` / `GROVE_SOCK` / `GROVE_WORKSPACE` / `GROVE_BIN`, and none of the
+launching terminal's identity (no `TMUX`, `TERM_PROGRAM`, …) or of a Claude Code
+session grove was started from, so `claude` in a pane is a normal session.
 
 Every grove process for a repo talks to that repo's window over a unix socket
 under your cache dir. That is how `grove`, `grove open`, `grove new` and
@@ -173,10 +200,22 @@ under your cache dir. That is how `grove`, `grove open`, `grove new` and
 
 Quitting grove stops every pane, so it asks first while any are running.
 
+## Upgrading from the tmux version
+
+grove no longer uses tmux. After upgrading:
+
+- Remove the old tmux `@claude_state` hooks from `~/.claude/settings.json` and
+  add the [grove ones](#claude-code-status).
+- Existing `grove-*` tmux sessions keep running until you end them
+  (`tmux kill-session -t <name>`); grove won't reattach to them.
+- `grove open <name> -w` and `terminal` now open the worktree in an external
+  terminal (`{cmd}` / `{dir}`) rather than attaching tmux.
+
 ## Development
 
 ```sh
 make dev            # wails dev: live-reloading frontend + Go backend
+make build          # build/bin/grove.app (macOS) or build/bin/grove (Linux)
 make install        # build with version=git-describe and install (see above)
 make test           # builds the frontend (the binary embeds it), then go test
 make vet / make fmt

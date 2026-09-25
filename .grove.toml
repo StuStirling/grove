@@ -3,8 +3,8 @@
 
 # Command to open a worktree in an external terminal ("Open in Terminal",
 # 'grove open <name> -w'). {cmd} = a shell in the worktree, {dir} = its path:
-#   "ghostty -e {cmd}"  "wezterm start -- {cmd}"  "kitty {cmd}"  "alacritty -e {cmd}"
-#   "open -na Ghostty --args --working-directory={dir}"
+#   macOS: "open -na Ghostty --args --working-directory={dir}"
+#   Linux: "ghostty -e {cmd}"  "wezterm start -- {cmd}"  "kitty {cmd}"  "alacritty -e {cmd}"
 terminal = ""
 
 # Terminal font for the panes (defaults: system monospace, 13px).

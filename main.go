@@ -17,7 +17,8 @@ usage:
   grove                        open this repo's grove window (focuses it if open)
   grove open <name>            open a workspace in the grove window
   grove open <name> -w         open a workspace in an external terminal (uses ` + "`terminal`" + `)
-  grove new <intention> <br>   create a worktree (branch <br>) and open it
+  grove new <intention> <br> [base]
+                               create a worktree (new branch <br> from base) and open it
   grove remove <name>          remove a worktree (--force if dirty, --branch to delete its branch)
   grove init                   write a .grove.toml template in the current repo
   grove list                   print workspace names
