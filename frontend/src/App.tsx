@@ -5,6 +5,7 @@ import type { main } from '../wailsjs/go/models'
 import { WorkspaceHeader, WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
+import { groups } from './repos'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { errText, key } from './util'
 
@@ -16,11 +17,21 @@ type Modal = { kind: 'new' | 'checkout'; repo: string } | { kind: 'help' } | Con
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
 const SPLIT_KEY = 'grove.split:' // + worktree dir: its split ratio
+const COLLAPSED_KEY = 'grove.collapsed' // repo paths whose sidebar groups are collapsed
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace'
 
 const savedRatio = (dir: string) => {
   const r = Number(localStorage.getItem(SPLIT_KEY + dir))
   return r > 0 && r < 1 ? r : 0.5
+}
+
+const savedCollapsed = (): string[] => {
+  try {
+    const v = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]')
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
 }
 
 // Focus a pane's terminal, waiting a few frames for it to mount and for a
@@ -45,6 +56,10 @@ export default function App() {
   const [fontDelta, setFontDelta] = useState(() => Number(localStorage.getItem(FONT_KEY)) || 0)
   const [removals, setRemovals] = useState<rm.Removals>({})
   const [sidebarW, setSidebarW] = useState(() => sidebarWidth(Number(localStorage.getItem(SIDEBAR_KEY)) || 250))
+  const [collapsed, setCollapsed] = useState(savedCollapsed)
+  // The repo whose Remove from window is being confirmed in the sidebar, and
+  // where focus was when it was asked.
+  const [repoConfirm, setRepoConfirm] = useState<{ path: string; back: Element | null } | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
   const snapSeq = useRef({ asked: 0, shown: 0 })
 
@@ -53,7 +68,8 @@ export default function App() {
   const q = filter.trim().toLowerCase()
   // Rows being removed stay in the list, where they were, until they're done.
   const listed = rm.withRemovals(all, removals)
-  const filtered = q ? listed.filter((w) => w.name.toLowerCase().includes(q) || w.branch.toLowerCase().includes(q)) : listed
+  const grouped = groups(listed, repos, collapsed, q)
+  const filtered = grouped.flatMap((g) => g.rows) // the rows shown: the list cursor never lands on a hidden one
   const sel = all.find((w) => w.dir === selected)
   const selTab = focusedTab(sel?.open ? layouts[sel.dir] : undefined)
   const font = {
@@ -264,19 +280,53 @@ export default function App() {
   const openRepo = () => api.OpenRepo().catch((e) => say(errText(e), true))
   const addRepo = () => api.AddRepo().then((name) => name && say(`added ${name}`), (e) => say(errText(e), true))
 
-  async function removeRepo(ws: main.WorkspaceInfo) {
-    const r = repos.find((r) => r.path === ws.repoPath)
-    if (!r?.added) return say(`${ws.repo || ws.name} is this window's own; only added repositories can be removed`)
-    const n = all.filter((w) => w.repoPath === r.path && w.open).length
-    if (n && !(await confirm(`Remove ${r.name} from this window?`, `Stops its ${n} open worktree${n === 1 ? '' : 's'}. Nothing is deleted from disk.`)))
-      return say('cancelled')
-    try {
-      await api.RemoveRepo(r.path)
-      say(`removed ${r.name} from this window`)
-      focusList()
-    } catch (e) {
-      say(errText(e), true)
+  // The repo header menu's actions.
+  const newIn = (path: string) => !busy && setModal({ kind: 'new', repo: path })
+  const reveal = (path: string) => api.Reveal(path).catch((e) => say(errText(e), true))
+  function toggleRepo(path: string) {
+    const next = collapsed.includes(path) ? collapsed.filter((p) => p !== path) : [...collapsed, path]
+    setCollapsed(next)
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next))
+  }
+
+  // A worktree of the repo that is mid-removal holds up taking the repo out of
+  // the window, so the removal's outcome still has a row to show in.
+  const removingIn = (path: string) => listed.find((w) => w.repoPath === path && rm.inFlight(removals[w.dir]))
+
+  // askRemoveRepo swaps an added repo's sidebar group for an inline confirm.
+  function askRemoveRepo(path: string) {
+    const w = removingIn(path)
+    if (w) return say(`wait for ${w.name} to finish removing`)
+    setFilter('') // so the group, and with it the confirm, is shown
+    setRepoConfirm({ path, back: document.activeElement })
+  }
+
+  // answerRemoveRepo takes the repo out of the window (its worktrees and files
+  // stay on disk; ⌘O adds it back), or doesn't, and ends the confirm.
+  async function answerRemoveRepo(remove: boolean) {
+    if (!repoConfirm || (remove && busy)) return // the status bar shows what's running
+    const { path, back } = repoConfirm
+    const r = repos.find((r) => r.path === path)
+    const w = removingIn(path)
+    if (remove && w) return say(`wait for ${w.name} to finish removing`)
+    let done = false
+    if (remove && r) {
+      done = !!(await run(`removing ${r.name} from this window`, async () => {
+        await api.RemoveRepo(r.path)
+        await refresh() // so its group goes with the confirm, rather than after
+        return true
+      }))
+      if (done) say(`removed ${r.name} from this window`)
     }
+    setRepoConfirm(null)
+    // Focus goes to the worktree list once the repo has gone (↩ reopens your
+    // worktree, if it's still there), else back where it was, else to the
+    // repo's ⋯.
+    requestAnimationFrame(() => {
+      if (done) return focusList()
+      if (back instanceof HTMLElement && back.isConnected && back !== document.body) return back.focus()
+      document.querySelector<HTMLElement>(`[data-repo="${CSS.escape(path)}"]`)?.focus()
+    })
   }
 
   function setFont(d: number) {
@@ -307,7 +357,12 @@ export default function App() {
       case 'open-repo':
         return openRepo()
       case 'remove-repo':
-        return need(removeRepo)
+        return need((w) => {
+          const r = repos.find((r) => r.path === w.repoPath)
+          if (!r) return say(`${w.name} is not in a repository`)
+          if (!r.added) return say(`${r.name} is this window's own repository, so it can't be removed`)
+          askRemoveRepo(r.path)
+        })
       case 'new':
       case 'checkout':
         if (!snap?.canCreate) return say('no [[repo]] configured to create into')
@@ -353,7 +408,10 @@ export default function App() {
         return setModal({ kind: 'help' })
     }
     if (action.startsWith('ws:')) {
+      // ⌘1-9 number the list's rows, so one hidden in a collapsed group has no
+      // number shown and doesn't open.
       const w = all[Number(action.slice(3))]
+      if (w && collapsed.includes(w.repoPath) && !filtered.some((f) => f.dir === w.dir)) return say(`expand ${w.repo} to open ${w.name}`)
       if (w) openWs(w.dir)
     }
   }
@@ -448,7 +506,8 @@ export default function App() {
   }, [snap])
 
   // The list cursor follows its row when rows above it come or go (a removed
-  // row collapsing), so ↩ and ⌘⌫ act on the row you picked; else it is clamped.
+  // row collapsing, a repo's group), so ↩ and ⌘⌫ act on the row you picked;
+  // else it is clamped.
   const cursorRow = useRef<string | undefined>(undefined)
   useEffect(() => {
     cursorRow.current = filtered[cursor]?.dir
@@ -456,7 +515,7 @@ export default function App() {
   useLayoutEffect(() => {
     const i = filtered.findIndex((w) => w.dir === cursorRow.current)
     if (i >= 0) setCursor(i)
-  }, [listed.map((w) => w.dir).join('\n')])
+  }, [listed.map((w) => w.dir).join('\n'), collapsed.join('\n')])
   useEffect(() => setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1))), [filtered.length])
 
   // Run removal rows' timers: "Removed." collapsing away, a kept branch's wait.
@@ -510,6 +569,7 @@ export default function App() {
       <Sidebar
         snap={snap}
         all={all}
+        groups={grouped}
         filtered={filtered}
         selected={selected}
         cursor={cursor}
@@ -519,6 +579,7 @@ export default function App() {
         onFilterChange={(v) => {
           setFilter(v)
           setCursor(0)
+          setRepoConfirm(null) // it could be filtered out of sight
         }}
         onFilterFocus={() => {
           setListFocused(true)
@@ -530,6 +591,13 @@ export default function App() {
         removals={removals}
         onRemoval={onRemoval}
         onHold={(dir, held) => setRemovals((rs) => rm.hold(rs, dir, held, Date.now()))}
+        collapsed={collapsed}
+        onNewIn={newIn}
+        onToggle={toggleRepo}
+        onReveal={reveal}
+        onAskRemove={askRemoveRepo}
+        confirm={repoConfirm?.path ?? null}
+        onConfirm={answerRemoveRepo}
         width={sidebarW}
         onResize={resizeSidebar}
       />

@@ -46,7 +46,17 @@ button kbd { margin-left: 6px; background: transparent; }
 .list li.sel .name { color: #fff; font-weight: 600; }
 .list li.cursor { outline: 1px solid var(--accent); outline-offset: -1px; }
 .list li.empty { color: var(--dim); cursor: default; }
-.list li.group, .list li.group:hover { justify-content: space-between; padding: 10px 8px 3px; background: none; cursor: default; color: var(--dim); font-size: 11px; letter-spacing: 0.04em; }
+/* A repo's header. Its ⋯ shows on hover, or while it has focus or its menu is open. */
+.list li.group, .list li.group:hover { align-items: center; min-height: 30px; padding: 8px 4px 2px 8px; background: none; cursor: default; color: var(--dim); font-size: 11px; letter-spacing: 0.04em; }
+.group-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group .tag { flex: none; color: var(--dim); }
+.group .tag::before { content: '· '; }
+.group-menu { flex: none; margin-left: auto; padding: 0 6px; background: transparent; border: 0; color: var(--muted); font-size: 14px; line-height: 18px; opacity: 0; }
+.group-menu:hover { color: var(--text); }
+.list li.group:hover .group-menu, .list li.group:focus-within .group-menu, .group-menu[aria-expanded='true'] { opacity: 1; }
+/* Remove from window's inline confirm, in place of the repo's group. */
+.list li.repo-confirm, .list li.repo-confirm:hover { flex-direction: column; gap: 2px; margin: 6px 0; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border-strong); cursor: default; }
+.rm-q { font-weight: 600; overflow-wrap: anywhere; }
 /* Indicators sit in a fixed gutter on the left so long names never hide them. */
 .gutter { display: flex; gap: 2px; flex: none; width: 26px; padding-top: 1px; font-style: normal; }
 .gutter i { width: 12px; text-align: center; font-style: normal; }

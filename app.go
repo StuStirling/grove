@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -591,6 +592,20 @@ func (a *App) RemoveRepo(path string) error {
 	}
 	a.saveRepos()
 	a.reload()
+	return nil
+}
+
+// Reveal shows a folder in the file manager: selected in Finder on macOS, opened
+// elsewhere.
+func (a *App) Reveal(path string) error {
+	c := exec.Command("xdg-open", path)
+	if runtime.GOOS == "darwin" {
+		c = exec.Command("open", "-R", path)
+	}
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go func() { _ = c.Wait() }() // reap
 	return nil
 }
 

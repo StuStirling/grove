@@ -33,6 +33,9 @@ const kept = (reason: string, detail: string, now: number): State => ({ kind: 'k
 // or one that failed.
 export const usable = (r?: Removal) => !r || r.kind === 'failed'
 
+// inFlight is true while git is removing the worktree or deleting its branch.
+export const inFlight = (r?: Removal) => r?.kind === 'removing' || r?.kind === 'deleting'
+
 // start begins removing a worktree shown in listed. Its row remembers the rows
 // above it there; a retried removal keeps the place it had.
 export function start(rs: Removals, ws: main.WorkspaceInfo, listed: main.WorkspaceInfo[]): Removals {

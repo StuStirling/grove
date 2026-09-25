@@ -229,10 +229,11 @@ func initConfig() error {
 	return nil
 }
 
-// resolve expands [[repo]] worktrees and merges with manual [[workspace]]
-// entries. Repo discovery failures are reported as warnings, not fatal.
+// resolve expands [[repo]] worktrees, repo by repo, then adds the manual
+// [[workspace]] entries: the order the sidebar groups them in. Repo discovery
+// failures are reported as warnings, not fatal.
 func (c *Config) resolve() []Workspace {
-	out := append([]Workspace(nil), c.Workspace...)
+	var out []Workspace
 	for _, r := range c.Repo {
 		wss, err := expandRepo(r)
 		if err != nil {
@@ -241,7 +242,7 @@ func (c *Config) resolve() []Workspace {
 		}
 		out = append(out, wss...)
 	}
-	return out
+	return append(out, c.Workspace...)
 }
 
 // sampleConfig is the template written by `grove init` into a repo-local

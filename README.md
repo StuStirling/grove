@@ -78,8 +78,11 @@ in the sidebar. Each repo keeps its own `panes`, `worktree_root`, `base` and
 `setup`; `terminal` and the font come from the window's own repo. New Worktree
 creates in the selected worktree's repo, with a picker to change it. The window
 remembers added repos and shows them again next launch, and `grove` run in an
-added repo reaches this window. **Remove Repository from Window** takes one out
-again (its worktrees stay on disk).
+added repo reaches this window. To take one out again, pick **Remove from
+window…** in its header's ⋯ menu (or **Remove Repository from Window** in the File
+menu). The sidebar asks first, in place of the repo's worktrees, saying how many
+tabs will close; its worktrees, branches and files stay on disk, so ⌘O adds it
+back. The window's own repo can't be removed: the window is tied to it.
 
 Opened from Finder, the Dock or Spotlight there is no repo to start in, so grove
 uses the global `~/.config/grove/workspaces.toml` if you have one, and otherwise
@@ -143,6 +146,13 @@ row under the pointer; the rest are cut short to fit. Drag the sidebar's right
 edge to resize it (or Tab to the edge and use ←/→); grove remembers the width.
 Right-click a worktree to copy its branch or path, or press ⇧F10 in the worktree
 list for the highlighted one.
+
+Worktrees are listed under a header per repo, with manual `[[workspace]]` entries
+last under Other. Hover a repo's header (or Tab to it) for its **⋯** menu: **New
+worktree…** in that repo, **Collapse** / **Expand**, **Reveal in Finder** (**Open
+Folder** on Linux) and, for an added repo, **Remove from window…**. grove
+remembers which repos are collapsed. Typing in the filter still finds worktrees
+in a collapsed repo, but ⌘1–⌘9 don't open ones it hides.
 
 ## Claude Code status
 

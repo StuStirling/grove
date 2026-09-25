@@ -66,6 +66,10 @@ export function RemoveRepo(arg1) {
   return window['go']['main']['App']['RemoveRepo'](arg1);
 }
 
+export function Reveal(arg1) {
+  return window['go']['main']['App']['Reveal'](arg1);
+}
+
 export function SeenTab(arg1) {
   return window['go']['main']['App']['SeenTab'](arg1);
 }

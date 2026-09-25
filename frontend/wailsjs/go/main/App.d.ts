@@ -34,6 +34,8 @@ export function Remove(arg1:string,arg2:boolean):Promise<main.RemoveResult>;
 
 export function RemoveRepo(arg1:string):Promise<void>;
 
+export function Reveal(arg1:string):Promise<void>;
+
 export function SeenTab(arg1:string):Promise<void>;
 
 export function Size(arg1:string,arg2:number,arg3:number):Promise<void>;
