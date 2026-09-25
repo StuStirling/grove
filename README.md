@@ -128,6 +128,12 @@ New Worktree asks for an **intention** (the worktree dir name), a **branch** and
 Worktree from Branch checks out an existing local or remote branch. Both run the
 repo's `setup` command in the shell pane.
 
+The sidebar shows the whole name and branch of the worktree you're in, and of any
+row under the pointer; the rest are cut short to fit. Drag the sidebar's right
+edge to resize it (or Tab to the edge and use ←/→); grove remembers the width.
+Right-click a worktree to copy its branch or path, or press ⇧F10 in the worktree
+list for the highlighted one.
+
 ## Claude Code status
 
 The sidebar marks a worktree when its Claude Code needs you: **◆ yellow** for a

@@ -1,8 +1,17 @@
+import { useRef, useState } from 'react'
 import type { main } from '../wailsjs/go/models'
+import { ClipboardSetText } from '../wailsjs/runtime/runtime'
+import { Menu } from './Menu'
 import * as rm from './removal'
-import { key } from './util'
+import { key, startDrag } from './util'
 
 export type RemovalAction = 'force' | 'keep' | 'delete-branch' | 'dismiss'
+
+const MIN_WIDTH = 180
+const MAX_WIDTH = 480
+
+// sidebarWidth clamps a dragged or nudged sidebar width, also to half the window.
+export const sidebarWidth = (w: number) => Math.round(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, innerWidth / 2, w)))
 
 // Sidebar is the worktree list: a filter box (⌘P) over one row per worktree.
 export function Sidebar(props: {
@@ -22,8 +31,26 @@ export function Sidebar(props: {
   removals: rm.Removals
   onRemoval: (r: rm.Removal, action: RemovalAction) => void
   onHold: (name: string, held: boolean) => void
+  width: number
+  onResize: (width: number) => void
 }) {
   const { snap, all, filtered, selected, cursor, listFocused, filter, filterRef, removals } = props
+  const listRef = useRef<HTMLUListElement>(null)
+  const [menu, setMenu] = useState<{ ws: main.WorkspaceInfo; at: { x: number; y: number } } | null>(null)
+  const [dragging, setDragging] = useState(false)
+
+  // Shift+F10 or the context-menu key opens the cursor row's menu from the filter.
+  const onFilterKey = (e: React.KeyboardEvent) => {
+    const w = filtered[cursor]
+    const li = listRef.current?.querySelector('li.cursor')
+    if ((e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) && w && li) {
+      e.preventDefault()
+      const r = li.getBoundingClientRect()
+      setMenu({ ws: w, at: { x: r.left + 24, y: r.bottom } })
+    } else props.onFilterKey(e)
+  }
+  // Focus going to the row menu and back doesn't leave the list, so the cursor stays.
+  const viaMenu = (e: React.FocusEvent) => !!(e.relatedTarget as Element | null)?.closest('.menu')
 
   // A row button acts without opening the row. Used from the keyboard, focus
   // moves to the filter when the button goes away with the row's state.
@@ -45,11 +72,11 @@ export function Sidebar(props: {
         value={filter}
         spellCheck={false}
         onChange={(e) => props.onFilterChange(e.target.value)}
-        onFocus={props.onFilterFocus}
-        onBlur={props.onFilterBlur}
-        onKeyDown={props.onFilterKey}
+        onFocus={(e) => viaMenu(e) || props.onFilterFocus()}
+        onBlur={(e) => viaMenu(e) || props.onFilterBlur()}
+        onKeyDown={onFilterKey}
       />
-      <ul className="list">
+      <ul className="list" ref={listRef}>
         {filtered.map((w, i) => {
           const r = removals[w.name]
           const n = all.indexOf(w)
@@ -74,6 +101,10 @@ export function Sidebar(props: {
               aria-busy={r?.kind === 'removing' || r?.kind === 'deleting' || undefined}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => rm.usable(r) && props.onOpen(w.name)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setMenu({ ws: w, at: { x: e.clientX, y: e.clientY } })
+              }}
               title={w.dir}
               {...hold}
             >
@@ -136,6 +167,36 @@ export function Sidebar(props: {
         <span><i className="cl-waiting">◆</i><i className="cl-idle">◆</i> claude wants you</span>
         <span><i className="cl-working">◌</i> busy</span>
       </div>
+      <div
+        className={'sidebar-resize' + (dragging ? ' dragging' : '')}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        aria-valuenow={props.width}
+        aria-valuemin={MIN_WIDTH}
+        aria-valuemax={MAX_WIDTH}
+        tabIndex={0}
+        onPointerDown={(e) => {
+          setDragging(true)
+          startDrag(e, (ev) => props.onResize(ev.clientX), () => setDragging(false)) // the sidebar starts at x = 0
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+          e.preventDefault()
+          props.onResize(props.width + (e.key === 'ArrowRight' ? 10 : -10))
+        }}
+      />
+      {menu && (
+        <Menu
+          label={`Actions for ${menu.ws.name}`}
+          at={menu.at}
+          onClose={() => setMenu(null)}
+          items={[
+            ...(menu.ws.branch ? [{ label: 'Copy branch', onSelect: () => ClipboardSetText(menu.ws.branch) }] : []),
+            { label: 'Copy path', onSelect: () => ClipboardSetText(menu.ws.dir) },
+          ]}
+        />
+      )}
     </aside>
   )
 }

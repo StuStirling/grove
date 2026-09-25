@@ -3,7 +3,7 @@ import * as api from '../wailsjs/go/main/App'
 import { EventsOn, WindowSetTitle } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
 import { WorkspaceView, terms } from './Panes'
-import { Sidebar, type RemovalAction } from './Sidebar'
+import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
 import { errText, key } from './util'
 
@@ -11,6 +11,7 @@ type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boole
 type Modal = { kind: 'new' } | { kind: 'checkout' } | { kind: 'help' } | Confirm
 
 const FONT_KEY = 'grove.fontDelta'
+const SIDEBAR_KEY = 'grove.sidebarWidth'
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace'
 
 // Focus a pane's terminal, waiting a few frames for it to mount and for a
@@ -34,6 +35,7 @@ export default function App() {
   const [msg, setMsg] = useState<{ text: string; err?: boolean }>({ text: '' })
   const [fontDelta, setFontDelta] = useState(() => Number(localStorage.getItem(FONT_KEY)) || 0)
   const [removals, setRemovals] = useState<rm.Removals>({})
+  const [sidebarW, setSidebarW] = useState(() => sidebarWidth(Number(localStorage.getItem(SIDEBAR_KEY)) || 250))
   const filterRef = useRef<HTMLInputElement>(null)
   const lastRight = useRef<Record<string, number>>({})
 
@@ -225,6 +227,12 @@ export default function App() {
     localStorage.setItem(FONT_KEY, String(d))
   }
 
+  function resizeSidebar(w: number) {
+    const v = sidebarWidth(w)
+    setSidebarW(v)
+    localStorage.setItem(SIDEBAR_KEY, String(v))
+  }
+
   function dispatch(action: string) {
     if (busy) return
     if (modal) {
@@ -385,7 +393,8 @@ export default function App() {
   const openList = all.filter((w) => w.open)
 
   return (
-    <div className="app">
+    // min() keeps the sidebar to half the window if the window shrinks later.
+    <div className="app" style={{ '--sidebar': `min(${sidebarW}px, 50vw)` } as React.CSSProperties}>
       <Sidebar
         snap={snap}
         all={all}
@@ -409,6 +418,8 @@ export default function App() {
         removals={removals}
         onRemoval={onRemoval}
         onHold={(name, held) => setRemovals((rs) => rm.hold(rs, name, held, Date.now()))}
+        width={sidebarW}
+        onResize={resizeSidebar}
       />
 
       <main className="main">

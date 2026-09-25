@@ -33,7 +33,7 @@ button kbd { margin-left: 6px; background: transparent; }
 .app { display: grid; grid-template-columns: var(--sidebar) 1fr; grid-template-rows: 1fr auto; height: 100%; }
 
 /* ---- sidebar ---- */
-.sidebar { grid-row: 1; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); min-height: 0; }
+.sidebar { grid-row: 1; position: relative; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); min-height: 0; }
 .brand { padding: 12px 14px 8px; font-weight: 700; color: var(--idle); letter-spacing: 0.02em; }
 .brand span { margin-left: 8px; font-weight: 500; color: var(--muted); }
 .filter { margin: 0 10px 8px; padding: 6px 9px; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px; font: inherit; }
@@ -50,6 +50,9 @@ button kbd { margin-left: 6px; background: transparent; }
 .gutter i { width: 12px; text-align: center; font-style: normal; }
 .text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .name, .branch { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The open worktree, and a hovered row, show their whole name and branch. */
+.list li.sel .name, .list li.sel .branch,
+.list li:not(.rm-done):hover .name, .list li:not(.rm-done):hover .branch { white-space: normal; overflow-wrap: anywhere; }
 .branch { color: var(--dim); font-size: 12px; }
 .num { flex: none; color: var(--dim); font-size: 11px; padding-top: 1px; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 10px 14px; border-top: 1px solid var(--border); color: var(--dim); font-size: 11px; }
@@ -59,6 +62,9 @@ button kbd { margin-left: 6px; background: transparent; }
 .cl-waiting { color: var(--waiting); font-weight: 700; }
 .cl-idle { color: var(--idle); font-weight: 700; }
 .cl-working { color: var(--dim); }
+/* Drag, or ←→ while focused, to resize the sidebar. */
+.sidebar-resize { position: absolute; top: 0; bottom: 0; right: -3px; width: 6px; z-index: 3; cursor: col-resize; }
+.sidebar-resize:hover, .sidebar-resize:focus-visible, .sidebar-resize.dragging { background: linear-gradient(var(--accent), var(--accent)) center / 2px 100% no-repeat; outline: none; }
 /* Removal status, shown in the worktree's own row. */
 .gutter .spinner { margin: 3px 1px 0; }
 .rm-line { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
