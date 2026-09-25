@@ -83,10 +83,14 @@ button kbd { margin-left: 6px; background: transparent; }
 
 /* ---- panes ---- */
 .main { grid-row: 1; position: relative; min-width: 0; min-height: 0; }
-/* A worktree is a grid: tab bars in the upper row, bodies in the last, and when
-   split, columns left | divider | right. Every terminal is placed in its pane's
-   body cell, stacked with its pane's other tabs. */
-.workspace { position: absolute; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+/* A worktree is a grid: its header, then tab bars, then bodies, and when split,
+   columns left | divider | right. Every terminal is placed in its pane's body
+   cell, stacked with its pane's other tabs. */
+.workspace { position: absolute; inset: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+.ws-head { grid-row: 1; grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 6px 12px; background: var(--surface); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.ws-name { min-width: 0; font-weight: 600; color: var(--text); }
+.ws-branch { min-width: 0; font: 12px ui-monospace, Menlo, monospace; color: var(--dim); }
+.placeholder .ws-head { position: absolute; inset: 0 0 auto; }
 /* Background workspaces stay laid out (so their panes keep their size) but unseen. */
 .workspace.hidden, .workspace.hidden * { visibility: hidden !important; }
 .tabbar { grid-row: -3; display: flex; align-items: stretch; min-width: 0; background: var(--surface); border-bottom: 1px solid var(--border); }

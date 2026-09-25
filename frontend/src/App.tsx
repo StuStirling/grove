@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as api from '../wailsjs/go/main/App'
 import { EventsOn, WindowSetTitle } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
-import { WorkspaceView, terms } from './Panes'
+import { WorkspaceHeader, WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
@@ -506,6 +506,7 @@ export default function App() {
           <div className="placeholder">
             {sel ? (
               <>
+                <WorkspaceHeader ws={sel} />
                 <p>No sessions open in this worktree.</p>
                 <div className="actions">
                   <button onClick={() => newTab(sel.name, 'claude')}>

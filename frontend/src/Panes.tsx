@@ -114,7 +114,18 @@ function TermPane({ pane, font, dim, onFocus }: { pane: main.Pane; font: Font; d
   return <div className="term" ref={ref} />
 }
 
-const markNote: Record<string, string> = { waiting: 'Claude is waiting for permission', idle: 'Claude finished: your turn' }
+// WorkspaceHeader names the worktree and its branch in full: long ones wrap
+// rather than being cut off, since the sidebar truncates them.
+export function WorkspaceHeader({ ws }: { ws: main.WorkspaceInfo }) {
+  return (
+    <header className="ws-head">
+      <span className="ws-name">{ws.name}</span>
+      {ws.branch && <span className="ws-branch">{ws.branch}</span>}
+    </header>
+  )
+}
+
+const markNote: Record<string, string> ={ waiting: 'Claude is waiting for permission', idle: 'Claude finished: your turn' }
 const MIN_PANE = 240 // px
 let dragged: string | null = null // id of the tab being dragged
 
@@ -189,6 +200,7 @@ export function WorkspaceView(props: {
       ref={rootRef}
       style={{ gridTemplateColumns: split ? `minmax(0, ${l.ratio}fr) 5px minmax(0, ${1 - l.ratio}fr)` : 'minmax(0, 1fr)' }}
     >
+      <WorkspaceHeader ws={ws} />
       {l.panes.map((p, i) => (
         <div key={i} className={'tabbar' + (dim(i) ? ' dim' : '')} style={{ gridColumn: col(i), visibility: away(i) ? 'hidden' : undefined }} {...dropOn(i, p.tabs.length)}>
           <div className="tabs" role="tablist" aria-label={split ? `${i === 0 ? 'Left' : 'Right'} pane tabs` : 'Tabs'}>
