@@ -35,8 +35,9 @@ type App struct {
 	cfgErr string
 	sess   *sessions
 
-	// gitMu serialises Remove and DeleteBranch: Wails runs each call on its own
-	// goroutine, and concurrent `git branch` runs fight over git's ref locks.
+	// gitMu serialises branch deletions (Remove's and DeleteBranch's): Wails runs
+	// each call on its own goroutine, and concurrent `git branch -d` runs fight
+	// over git's ref locks. Removing different worktrees at once is fine.
 	gitMu sync.Mutex
 
 	mu        sync.Mutex
@@ -338,10 +339,11 @@ func (a *App) opened(ws Workspace, r Repo) string {
 
 // RemoveResult is how a worktree removal went, shown in its sidebar row.
 type RemoveResult struct {
-	Status     string `json:"status"`     // "removed" | "dirty" (nothing removed) | "failed"
-	Reason     string `json:"reason"`     // one line, plain words
-	Detail     string `json:"detail"`     // git's full text, for a tooltip
-	BranchKept string `json:"branchKept"` // "" = deleted or none; "unmerged"; else git's one-line error
+	Status       string `json:"status"`       // "removed" | "dirty" (nothing removed) | "failed"
+	Reason       string `json:"reason"`       // one line, plain words
+	Detail       string `json:"detail"`       // git's full text, for a tooltip
+	BranchKept   string `json:"branchKept"`   // "" = deleted or none; "unmerged"; else git's one-line error
+	BranchDetail string `json:"branchDetail"` // git's full text when BranchKept is its error
 }
 
 // maxDirtyLines caps the uncommitted changes listed in a dirty removal's detail.
@@ -358,8 +360,6 @@ func (a *App) Remove(name string, force bool) RemoveResult {
 	if ws.RepoPath == "" {
 		return RemoveResult{Status: "failed", Reason: "not a git worktree"}
 	}
-	a.gitMu.Lock()
-	defer a.gitMu.Unlock()
 	err := removeWorktree(ws.RepoPath, ws.Dir, force)
 	var dirty *dirtyError
 	if errors.As(err, &dirty) {
@@ -384,30 +384,27 @@ func (a *App) Remove(name string, force bool) RemoveResult {
 		_ = a.sess.close(name)
 	}
 	r := RemoveResult{Status: "removed"}
-	switch err := removeBranch(ws.RepoPath, ws.Branch, false); {
-	case errors.Is(err, errBranchUnmerged):
-		r.BranchKept = "unmerged"
-	case err != nil:
-		r.BranchKept, _ = explain(err)
-	}
+	a.gitMu.Lock()
+	r.BranchKept, r.BranchDetail = branchKept(removeBranch(ws.RepoPath, ws.Branch, false))
+	a.gitMu.Unlock()
 	return r
 }
 
+// BranchResult is how deleting a kept branch went: Kept is why it is still
+// there, as RemoveResult.BranchKept ("" once deleted), Detail as BranchDetail.
+type BranchResult struct {
+	Kept   string `json:"kept"`
+	Detail string `json:"detail"`
+}
+
 // DeleteBranch deletes a branch left behind by Remove: safely (git branch -d)
-// or, with force, even when unmerged (-D). It returns why the branch was kept,
-// as RemoveResult.BranchKept does: "" once it is deleted.
-func (a *App) DeleteBranch(repoPath, branch string, force bool) string {
+// or, with force, even when unmerged (-D).
+func (a *App) DeleteBranch(repoPath, branch string, force bool) BranchResult {
 	a.gitMu.Lock()
 	defer a.gitMu.Unlock()
-	err := removeBranch(repoPath, branch, force)
-	if errors.Is(err, errBranchUnmerged) {
-		return "unmerged"
-	}
-	if err != nil {
-		reason, _ := explain(err)
-		return reason
-	}
-	return ""
+	var r BranchResult
+	r.Kept, r.Detail = branchKept(removeBranch(repoPath, branch, force))
+	return r
 }
 
 // Branches lists local and remote branches, for autocompletion.

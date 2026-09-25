@@ -166,7 +166,7 @@ export default function App() {
     try {
       res = await api.Remove(name, force)
     } catch (e) {
-      res = { status: 'failed', reason: errText(e), detail: errText(e), branchKept: '' }
+      res = { status: 'failed', reason: errText(e), detail: errText(e), branchKept: '', branchDetail: '' }
     }
     setRemovals((rs) => rm.result(rs, name, res, Date.now()))
     if (res.status === 'removed') await reload(false) // drop it from menus; its row stays until done
@@ -188,13 +188,13 @@ export default function App() {
         const detail = unmerged ? "It isn't merged, so its commits will be lost." : 'Commits only on this branch will be lost.'
         if (!(await confirm(`Delete branch ${r.ws.branch}?`, detail, true))) return
         setRemovals((rs) => rm.deleting(rs, r))
-        let why: string
+        let res: main.BranchResult
         try {
-          why = await api.DeleteBranch(r.ws.repoPath, r.ws.branch, true)
+          res = await api.DeleteBranch(r.ws.repoPath, r.ws.branch, true)
         } catch (e) {
-          why = errText(e)
+          res = { kept: errText(e), detail: errText(e) }
         }
-        setRemovals((rs) => rm.branchResult(rs, name, why, Date.now()))
+        setRemovals((rs) => rm.branchResult(rs, name, res, Date.now()))
       }
     }
   }

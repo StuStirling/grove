@@ -359,10 +359,22 @@ func worktreeChanges(dir string) ([]string, error) {
 	return nil, nil
 }
 
+// refusedAsDirty reports whether git refused a plain `git worktree remove` over
+// changes or populated submodules, which --force overrides. It doesn't override
+// other refusals (the main worktree, a locked one), so those don't offer it.
+// ponytail: matches git's English messages, as removeBranch does; under a
+// translated git a dirty worktree reports git's refusal with no Force remove.
+func refusedAsDirty(err error) bool {
+	var ge *gitError
+	return errors.As(err, &ge) &&
+		(strings.Contains(ge.out, "contains modified or untracked files") || strings.Contains(ge.out, "containing submodules"))
+}
+
 // removeWorktree removes the linked worktree at dir, running git from repoPath
 // (which must not be dir). It tries a plain remove first; if git refuses, it only
-// retries with --force when the worktree is clean ignoring submodules, otherwise
-// it returns a *dirtyError so the caller can ask for explicit confirmation.
+// retries with --force when the worktree is clean ignoring submodules. With real
+// changes it returns a *dirtyError, so the caller can ask for explicit
+// confirmation, or git's error when that isn't what git refused over.
 func removeWorktree(repoPath, dir string, force bool) error {
 	err := runGit(repoPath, "worktree", "remove", dir)
 	if err == nil {
@@ -371,7 +383,10 @@ func removeWorktree(repoPath, dir string, force bool) error {
 	if !force {
 		// Can't tell (status failed) → treat as dirty, stay safe.
 		if changes, serr := worktreeChanges(dir); serr != nil || len(changes) > 0 {
-			return &dirtyError{err, changes}
+			if refusedAsDirty(err) {
+				return &dirtyError{err, changes}
+			}
+			return err
 		}
 	}
 	return runGit(repoPath, "worktree", "remove", "--force", dir)
@@ -398,6 +413,18 @@ func removeBranch(repoPath, branch string, force bool) error {
 		return errBranchUnmerged
 	}
 	return err
+}
+
+// branchKept says why removeBranch kept a branch: "" when it went, "unmerged",
+// else git's one line, with git's full text as detail.
+func branchKept(err error) (reason, detail string) {
+	switch {
+	case err == nil:
+		return "", ""
+	case errors.Is(err, errBranchUnmerged):
+		return "unmerged", ""
+	}
+	return explain(err)
 }
 
 // expandRepo turns a [[repo]] entry into one workspace per worktree.

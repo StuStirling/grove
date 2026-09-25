@@ -4,7 +4,8 @@ import type { main } from '../wailsjs/go/models'
 import * as rm from './removal.ts'
 
 const ws = (name: string) => ({ name, branch: name, dir: '/w/' + name, repo: 'r', repoPath: '/r' }) as main.WorkspaceInfo
-const res = (status: string, extra: Partial<main.RemoveResult> = {}) => ({ status, reason: '', detail: '', branchKept: '', ...extra }) as main.RemoveResult
+const res = (status: string, extra: Partial<main.RemoveResult> = {}) => ({ status, reason: '', detail: '', branchKept: '', branchDetail: '', ...extra }) as main.RemoveResult
+const branch = (kept: string, detail = '') => ({ kept, detail }) as main.BranchResult
 
 test('a clean removal shows done, collapses, then goes', () => {
   let rs = rm.start({}, ws('a'), 0)
@@ -22,6 +23,8 @@ test('a clean removal shows done, collapses, then goes', () => {
 test('a kept branch waits, pauses while held and resumes with the time left', () => {
   let rs = rm.result(rm.start({}, ws('a'), 0), 'a', res('removed', { branchKept: 'unmerged' }), 0)
   assert.equal(rs.a.kind === 'kept' && rs.a.reason, 'unmerged')
+  const why = rm.result(rm.start({}, ws('a'), 0), 'a', res('removed', { branchKept: 'locked', branchDetail: 'error: locked\nmore' }), 0)
+  assert.equal(why.a.kind === 'kept' && why.a.detail, 'error: locked\nmore')
   assert.equal(rm.nextDeadline(rs), rm.KEPT_MS)
   rs = rm.hold(rs, 'a', true, 4000)
   assert.equal(rm.nextDeadline(rs), null, 'paused')
@@ -45,9 +48,10 @@ test('delete branch: kept, deleting, then done or back to kept with the error', 
   assert.equal(deleting.a.kind, 'deleting')
   assert.equal(rm.usable(deleting.a), false)
   assert.equal(rm.nextDeadline(deleting), null)
-  assert.equal(rm.branchResult(deleting, 'a', '', 50).a.kind, 'done')
-  const failed = rm.branchResult(deleting, 'a', "branch 'a' is checked out", 50)
+  assert.equal(rm.branchResult(deleting, 'a', branch(''), 50).a.kind, 'done')
+  const failed = rm.branchResult(deleting, 'a', branch("branch 'a' is checked out", "error: branch 'a' is checked out at '/w/a'"), 50)
   assert.equal(failed.a.kind === 'kept' && failed.a.reason, "branch 'a' is checked out")
+  assert.equal(failed.a.kind === 'kept' && failed.a.detail, "error: branch 'a' is checked out at '/w/a'", "git's full text, for the tooltip")
   assert.equal(rm.nextDeadline(failed), 50 + rm.KEPT_MS, 'a fresh wait')
 })
 
@@ -76,7 +80,7 @@ test('a failed removal can be forced or kept', () => {
 
 test('a result for a row that was dismissed is ignored', () => {
   assert.deepEqual(rm.result({}, 'a', res('removed'), 0), {})
-  assert.deepEqual(rm.branchResult({}, 'a', '', 0), {})
+  assert.deepEqual(rm.branchResult({}, 'a', branch(''), 0), {})
   const kept = rm.result(rm.start({}, ws('a'), 0), 'a', res('removed', { branchKept: 'unmerged' }), 0)
   assert.equal(rm.result(kept, 'a', res('failed'), 0), kept, 'only a removing row takes a result')
 })

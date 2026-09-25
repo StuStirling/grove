@@ -126,7 +126,9 @@ export function Sidebar(props: {
                 {r?.kind === 'done' && <span className="rm-line">Removed.</span>}
                 {r?.kind === 'kept' && (
                   <>
-                    <span className="rm-line">{r.reason === 'unmerged' ? 'Removed. Branch kept (unmerged).' : `Removed. Branch kept: ${r.reason}`}</span>
+                    <span className="rm-line" title={r.detail || undefined}>
+                      {r.reason === 'unmerged' ? 'Removed. Branch kept (unmerged).' : `Removed. Branch kept: ${r.reason}`}
+                    </span>
                     <span className="rm-actions">
                       <button onClick={act(r, 'delete-branch')} aria-label={`Delete branch ${w.branch} of ${w.name}`}>
                         Delete branch

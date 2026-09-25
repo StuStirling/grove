@@ -82,6 +82,12 @@ func gitRepo(t *testing.T) string {
 	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
 	t.Setenv("GIT_COMMITTER_NAME", "t")
 	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+	// A git hook exports these for its own repo; left set, they'd aim every git
+	// command here at it. Setenv first so the test restores them.
+	for _, k := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
 	repo := filepath.Join(t.TempDir(), "repo")
 	gitT(t, "", "init", "-q", "--initial-branch=trunk", repo)
 	writeT(t, filepath.Join(repo, "a.txt"), "a")
@@ -167,11 +173,15 @@ func TestRemoveKeepsUnmergedBranch(t *testing.T) {
 	if fileExists(ws.Dir) || !branchExists(repo, "feature") {
 		t.Fatal("want the worktree gone and the branch kept")
 	}
-	if kept := a.DeleteBranch(repo, "feature", false); kept != "unmerged" || !branchExists(repo, "feature") {
-		t.Fatalf("safe delete of an unmerged branch = %q", kept)
+	if r := a.DeleteBranch(repo, "feature", false); r.Kept != "unmerged" || !branchExists(repo, "feature") {
+		t.Fatalf("safe delete of an unmerged branch = %+v", r)
 	}
-	if kept := a.DeleteBranch(repo, "feature", true); kept != "" || branchExists(repo, "feature") {
-		t.Fatalf("forced delete = %q, branch still there: %v", kept, branchExists(repo, "feature"))
+	if r := a.DeleteBranch(repo, "feature", true); r.Kept != "" || branchExists(repo, "feature") {
+		t.Fatalf("forced delete = %+v, branch still there: %v", r, branchExists(repo, "feature"))
+	}
+	// Any other refusal keeps git's full text for the tooltip.
+	if r := a.DeleteBranch(repo, "trunk", true); r.Kept == "" || strings.Contains(r.Kept, "error:") || !strings.Contains(r.Detail, "error:") {
+		t.Fatalf("deleting the checked-out branch = %+v", r)
 	}
 }
 
@@ -188,6 +198,48 @@ func TestRemoveFailureReason(t *testing.T) {
 	}
 	if !strings.Contains(r.Detail, "fatal:") {
 		t.Errorf("detail should keep git's full text: %q", r.Detail)
+	}
+}
+
+func TestRemoveRefusedForAnotherReason(t *testing.T) {
+	// Refusals --force doesn't override are reported as they are, not as dirty,
+	// even with changes: Force remove would only fail again.
+	repo := gitRepo(t)
+	writeT(t, filepath.Join(repo, "a.txt"), "changed")
+	a := &App{ws: []Workspace{{Name: "repo", Dir: repo, RepoPath: repo}}, sess: newSessions("", func(string, ...any) {})}
+	if r := a.Remove("repo", false); r.Status != "failed" || !strings.Contains(r.Reason, "is a main working tree") {
+		t.Errorf("removing the dirty main worktree = %+v", r)
+	}
+
+	a, ws := addWorktree(t, repo, "locked")
+	writeT(t, filepath.Join(ws.Dir, "a.txt"), "changed")
+	gitT(t, repo, "worktree", "lock", ws.Dir)
+	if r := a.Remove(ws.Name, false); r.Status != "failed" || !strings.Contains(r.Reason, "locked working tree") {
+		t.Errorf("removing a dirty locked worktree = %+v", r)
+	}
+	if !fileExists(ws.Dir) {
+		t.Error("the locked worktree was removed")
+	}
+}
+
+func TestRemoveWithSubmodules(t *testing.T) {
+	// Populated submodules alone make git refuse; that's forced through when
+	// clean, and reported as dirty when there are real changes.
+	repo := gitRepo(t)
+	sub := filepath.Join(filepath.Dir(repo), "sub")
+	gitT(t, "", "init", "-q", "--initial-branch=trunk", sub)
+	gitT(t, sub, "commit", "-q", "--allow-empty", "-m", "s")
+	gitT(t, repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sm")
+	gitT(t, repo, "commit", "-qm", "sm")
+	for name, want := range map[string]string{"dirty": "dirty", "clean": "removed"} {
+		a, ws := addWorktree(t, repo, name)
+		gitT(t, ws.Dir, "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init")
+		if name == "dirty" {
+			writeT(t, filepath.Join(ws.Dir, "a.txt"), "changed")
+		}
+		if r := a.Remove(ws.Name, false); r.Status != want {
+			t.Errorf("%s: removal = %+v, want %s", name, r, want)
+		}
 	}
 }
 

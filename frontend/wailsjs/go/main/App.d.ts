@@ -14,7 +14,7 @@ export function Create(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function DefaultBase():Promise<string>;
 
-export function DeleteBranch(arg1:string,arg2:string,arg3:boolean):Promise<string>;
+export function DeleteBranch(arg1:string,arg2:string,arg3:boolean):Promise<main.BranchResult>;
 
 export function NewTab(arg1:string,arg2:string):Promise<main.Pane>;
 

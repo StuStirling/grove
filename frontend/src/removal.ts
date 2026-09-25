@@ -10,7 +10,7 @@ export const KEPT_MS = 10_000
 type State =
   | { kind: 'removing' }
   | { kind: 'done'; until: number; collapsing: boolean } // until: when this phase ends
-  | { kind: 'kept'; reason: string; left: number; since: number | null } // since: null while paused
+  | { kind: 'kept'; reason: string; detail: string; left: number; since: number | null } // since: null while paused
   | { kind: 'deleting' } // Delete branch in flight
   | { kind: 'failed'; reason: string; detail: string; dirty: boolean }
 
@@ -25,7 +25,7 @@ const drop = (rs: Removals, name: string): Removals => {
   return rest
 }
 const done = (now: number): State => ({ kind: 'done', until: now + DONE_MS, collapsing: false })
-const kept = (reason: string, now: number): State => ({ kind: 'kept', reason, left: KEPT_MS, since: now })
+const kept = (reason: string, detail: string, now: number): State => ({ kind: 'kept', reason, detail, left: KEPT_MS, since: now })
 
 // usable is true while the worktree is still there to open or act on: no removal
 // or one that failed.
@@ -38,7 +38,7 @@ export const start = (rs: Removals, ws: main.WorkspaceInfo, index: number): Remo
 export function result(rs: Removals, name: string, res: main.RemoveResult, now: number): Removals {
   const r = rs[name]
   if (r?.kind !== 'removing') return rs
-  if (res.status === 'removed') return put(rs, r, res.branchKept ? kept(res.branchKept, now) : done(now))
+  if (res.status === 'removed') return put(rs, r, res.branchKept ? kept(res.branchKept, res.branchDetail, now) : done(now))
   return put(rs, r, { kind: 'failed', reason: res.reason, detail: res.detail, dirty: res.status === 'dirty' })
 }
 
@@ -57,11 +57,11 @@ export function deleting(rs: Removals, r: Removal): Removals {
   return cur.kind === 'kept' ? put(rs, cur, { kind: 'deleting' }) : rs
 }
 
-// branchResult applies DeleteBranch's answer: "" = deleted, else why it was kept.
-export function branchResult(rs: Removals, name: string, why: string, now: number): Removals {
+// branchResult applies DeleteBranch's answer: kept "" = deleted, else why it was kept.
+export function branchResult(rs: Removals, name: string, res: main.BranchResult, now: number): Removals {
   const r = rs[name]
   if (r?.kind !== 'deleting') return rs
-  return put(rs, r, why ? kept(why, now) : done(now))
+  return put(rs, r, res.kept ? kept(res.kept, res.detail, now) : done(now))
 }
 
 // hold pauses a kept row's timer while it is hovered or focused, and resumes it
@@ -70,7 +70,7 @@ export function hold(rs: Removals, name: string, held: boolean, now: number): Re
   const r = rs[name]
   if (r?.kind !== 'kept' || held === (r.since === null)) return rs
   const left = r.since === null ? r.left : r.left - (now - r.since)
-  return put(rs, r, { kind: 'kept', reason: r.reason, left, since: held ? null : now })
+  return put(rs, r, { kind: 'kept', reason: r.reason, detail: r.detail, left, since: held ? null : now })
 }
 
 // deadline is when a row next changes by itself, or null.

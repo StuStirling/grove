@@ -1,5 +1,19 @@
 export namespace main {
 	
+	export class BranchResult {
+	    kept: string;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BranchResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kept = source["kept"];
+	        this.detail = source["detail"];
+	    }
+	}
 	export class Pane {
 	    id: string;
 	    cmd: string;
@@ -25,6 +39,7 @@ export namespace main {
 	    reason: string;
 	    detail: string;
 	    branchKept: string;
+	    branchDetail: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new RemoveResult(source);
@@ -36,6 +51,7 @@ export namespace main {
 	        this.reason = source["reason"];
 	        this.detail = source["detail"];
 	        this.branchKept = source["branchKept"];
+	        this.branchDetail = source["branchDetail"];
 	    }
 	}
 	export class ShortcutInfo {
