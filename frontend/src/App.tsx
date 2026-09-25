@@ -155,8 +155,8 @@ export default function App() {
   // Removal reports in the worktree's own row, not the status bar, and doesn't
   // block other actions: several can run at once.
   async function deleteWs(ws: main.WorkspaceInfo) {
-    if (!ws.repoPath) return say(`${ws.name} is not a git worktree`)
-    if (!(await confirm(`Delete worktree ${ws.name}?`, `Removes ${ws.dir} and stops its panes.`, true))) return say('cancelled')
+    // A manual [[workspace]] isn't a worktree: Remove refuses it, in its row.
+    if (ws.repoPath && !(await confirm(`Delete worktree ${ws.name}?`, `Removes ${ws.dir} and stops its panes.`, true))) return
     setRemovals((rs) => rm.start(rs, ws, Math.max(0, all.findIndex((w) => w.name === ws.name))))
     await removeRow(ws.name, false)
   }
