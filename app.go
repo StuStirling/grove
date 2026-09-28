@@ -5,7 +5,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -31,7 +34,7 @@ var icon []byte
 type App struct {
 	ctx    context.Context
 	ready  chan struct{} // closed once ctx is set
-	cfg    *Config
+	own    *Config       // the repo the window opened for; keys its socket and saved repos
 	cfgErr string
 	sess   *sessions
 
@@ -41,9 +44,28 @@ type App struct {
 	gitMu sync.Mutex
 
 	mu        sync.Mutex
+	cfg       *Config     // own plus the added repos (see merged); replaced, never mutated
+	added     []addedRepo // other repos shown in this window
+	skipped   []string    // saved repos restoreRepos couldn't add, kept in the saved list
 	ws        []Workspace
-	initial   string   // workspace to select on first load
-	menuNames []string // workspace names in the Go menu, to rebuild it on change
+	initial   string   // workspace (name or dir) to select on first load
+	setup     bool     // queue initial's setup command: `grove new` made it
+	menuNames []string // Go menu labels, to rebuild it on change
+}
+
+// addedRepo is another repo's config shown in this window. The window serves
+// that repo's socket too, so grove run in the repo reaches this window.
+type addedRepo struct {
+	cfg *Config
+	ln  net.Listener
+}
+
+// RepoInfo is a repo new worktrees can be created in.
+type RepoInfo struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Added  bool   `json:"added"`  // added to the window (removable), not its own
+	Config string `json:"config"` // its config file: removing the repo takes out all it lists
 }
 
 // WorkspaceInfo is one sidebar entry.
@@ -53,6 +75,7 @@ type WorkspaceInfo struct {
 	Dir      string `json:"dir"`
 	Repo     string `json:"repo"`     // display repo name, for the window title
 	RepoPath string `json:"repoPath"` // "" for a manual [[workspace]] (not deletable)
+	Config   string `json:"config"`   // the config file it came from
 	Open     bool   `json:"open"`
 	Claude   string `json:"claude"` // "working" | "waiting" | "idle" | ""
 	Panes    []Pane `json:"panes"`
@@ -62,6 +85,7 @@ type WorkspaceInfo struct {
 type Snapshot struct {
 	Error      string          `json:"error"` // config failed to load
 	Workspaces []WorkspaceInfo `json:"workspaces"`
+	Repos      []RepoInfo      `json:"repos"`
 	CanCreate  bool            `json:"canCreate"` // a [[repo]] exists to create into
 	Terminal   bool            `json:"terminal"`  // `terminal` is configured
 	FontFamily string          `json:"fontFamily"`
@@ -71,22 +95,117 @@ type Snapshot struct {
 }
 
 func newApp(initial string, setup bool) *App {
-	a := &App{ready: make(chan struct{}), initial: initial}
+	a := &App{ready: make(chan struct{}), initial: initial, setup: setup}
 	cfg, err := loadConfig()
 	if err != nil {
 		a.cfgErr = err.Error()
 		cfg = &Config{}
 	}
-	a.cfg = cfg
+	a.own, a.cfg = cfg, cfg
 	a.sess = newSessions(cfg.socketPath(), a.emit)
 	a.ws = cfg.resolve()
-	if setup && initial != "" {
-		// `grove new` launched us for a fresh worktree: queue its setup command.
-		if ws, ok := a.find(initial); ok {
-			a.sess.ensure(ws, a.repoFor(ws).Setup)
+	return a
+}
+
+// config is the window's current (merged) config.
+func (a *App) config() *Config {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg
+}
+
+// merged is the window's own config plus the added repos' repos and workspaces.
+// Window-wide settings (terminal, font) stay its own. Callers hold mu.
+func (a *App) merged() *Config {
+	c := *a.own
+	for _, r := range a.added {
+		c.Workspace = append(slices.Clip(c.Workspace), r.cfg.Workspace...)
+		c.Repo = append(slices.Clip(c.Repo), r.cfg.Repo...)
+	}
+	return &c
+}
+
+// addRepo shows the repo containing dir in this window too, serving its socket.
+// It returns the repo's name.
+func (a *App) addRepo(dir string) (string, error) {
+	path, local := resolveConfigPath(dir)
+	if !local {
+		return "", fmt.Errorf("no %s in %s: run `grove init` there first", localConfigName, dir)
+	}
+	cfg, err := readConfig(path)
+	if err != nil {
+		return "", err
+	}
+	name, sock := filepath.Base(filepath.Dir(path)), cfg.socketPath()
+	if len(cfg.Repo) == 0 {
+		// Only a repo's header offers to take it out of the window again.
+		return "", fmt.Errorf("no [[repo]] in %s: only a repo can be added to a window", path)
+	}
+	// A repo already listed another way (a linked worktree's own .grove.toml, a
+	// config naming the same repo) would list its worktrees twice. Its manual
+	// entries already listed are only dropped (resolve).
+	wss := (&Config{Repo: cfg.Repo}).resolve()
+	a.mu.Lock()
+	dup := sock == a.own.socketPath() || slices.ContainsFunc(a.added, func(r addedRepo) bool { return r.cfg.socketPath() == sock })
+	for _, w := range wss {
+		dup = dup || slices.ContainsFunc(a.ws, func(v Workspace) bool { return v.Dir == w.Dir })
+	}
+	a.mu.Unlock()
+	if dup {
+		return "", fmt.Errorf("%s is already in this window", name)
+	}
+	ln, err := ipcServe(sock, a.handle)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	a.mu.Lock()
+	a.added = append(a.added, addedRepo{cfg, ln})
+	a.skipped = slices.DeleteFunc(a.skipped, func(d string) bool { return d == filepath.Dir(path) }) // saved once, as added
+	a.cfg = a.merged()
+	a.mu.Unlock()
+	a.reload()
+	return name, nil
+}
+
+// saveRepos remembers the added repos, so the window shows them next launch,
+// and the ones restoreRepos skipped, so they are tried again then.
+func (a *App) saveRepos() {
+	a.mu.Lock()
+	var dirs []string
+	for _, r := range a.added {
+		dirs = append(dirs, filepath.Dir(r.cfg.Path))
+	}
+	dirs = append(dirs, a.skipped...)
+	a.mu.Unlock()
+	if err := os.WriteFile(a.own.reposFile(), []byte(strings.Join(dirs, "\n")), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "grove: saving repos: %v\n", err)
+	}
+}
+
+// restoreRepos re-adds the repos saved last time. One that is gone, or open in
+// another window, is skipped but stays saved (saveRepos), to be tried next launch.
+func (a *App) restoreRepos() {
+	data, _ := os.ReadFile(a.own.reposFile())
+	for _, dir := range strings.Split(string(data), "\n") {
+		if dir == "" {
+			continue
+		}
+		if _, err := a.addRepo(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "grove: not restoring %s: %v\n", dir, err)
+			a.mu.Lock()
+			a.skipped = append(a.skipped, dir)
+			a.mu.Unlock()
 		}
 	}
-	return a
+}
+
+// closeRepos stops serving the added repos' sockets, on quit.
+func (a *App) closeRepos() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, r := range a.added {
+		_ = r.ln.Close()
+	}
 }
 
 func (a *App) emit(event string, data ...any) {
@@ -140,7 +259,7 @@ func (a *App) show() {
 // reload re-discovers worktrees (re-running `git worktree list`), so worktrees
 // created outside grove appear, and tells the frontend.
 func (a *App) reload() {
-	ws := a.cfg.resolve()
+	ws := a.config().resolve()
 	a.mu.Lock()
 	a.ws = ws
 	a.mu.Unlock()
@@ -148,11 +267,13 @@ func (a *App) reload() {
 	a.emit("changed")
 }
 
-func (a *App) find(name string) (Workspace, bool) {
+// find returns the workspace whose dir (its key) or name is key. Names are only
+// for `grove gui <name>`: two repos can have worktrees of the same name.
+func (a *App) find(key string) (Workspace, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, ws := range a.ws {
-		if ws.Name == name {
+		if ws.Dir == key || ws.Name == key {
 			return ws, true
 		}
 	}
@@ -161,7 +282,7 @@ func (a *App) find(name string) (Workspace, bool) {
 
 // repoFor returns the [[repo]] a discovered workspace belongs to.
 func (a *App) repoFor(ws Workspace) Repo {
-	for _, r := range a.cfg.Repo {
+	for _, r := range a.config().Repo {
 		if expandPath(r.Path) == ws.RepoPath {
 			return r
 		}
@@ -169,12 +290,15 @@ func (a *App) repoFor(ws Workspace) Repo {
 	return Repo{}
 }
 
-// repo is the [[repo]] new worktrees are created in.
-func (a *App) repo() (Repo, error) {
-	if len(a.cfg.Repo) == 0 {
-		return Repo{}, errors.New("no [[repo]] configured to create into")
+// repo is the [[repo]] at path that new worktrees are created in; "" means the
+// first one.
+func (a *App) repo(path string) (Repo, error) {
+	for _, r := range a.config().Repo {
+		if path == "" || expandPath(r.Path) == path {
+			return r, nil
+		}
 	}
-	return a.cfg.Repo[0], nil
+	return Repo{}, errors.New("no [[repo]] configured to create into")
 }
 
 // handle answers requests from other grove processes (see ipc.go).
@@ -186,19 +310,19 @@ func (a *App) handle(req ipcReq) error {
 		a.show()
 	case "open":
 		a.reload()
-		ws, ok := a.find(req.Name)
+		ws, ok := a.find(req.Dir)
 		if !ok {
-			return fmt.Errorf("no workspace named %q", req.Name)
+			return fmt.Errorf("no workspace at %s", req.Dir)
 		}
 		setup := ""
 		if req.Setup {
 			setup = a.repoFor(ws).Setup
 		}
 		a.sess.ensure(ws, setup)
-		a.emit("open", ws.Name)
+		a.emit("open", ws.Dir)
 		a.show()
 	case "close":
-		err := a.sess.close(req.Name)
+		err := a.sess.close(req.Dir)
 		a.reload()
 		return err
 	case "state":
@@ -215,22 +339,29 @@ func (a *App) handle(req ipcReq) error {
 func (a *App) State() Snapshot {
 	open, claude := a.sess.snapshot()
 	a.mu.Lock()
+	cfg := a.cfg
 	infos := make([]WorkspaceInfo, len(a.ws))
 	for i, ws := range a.ws {
 		infos[i] = WorkspaceInfo{
-			Name: ws.Name, Branch: ws.Branch, Dir: ws.Dir, Repo: ws.RepoName, RepoPath: ws.RepoPath,
-			Claude: claude[ws.Name], Panes: open[ws.Name],
+			Name: ws.Name, Branch: ws.Branch, Dir: ws.Dir, Repo: ws.RepoName, RepoPath: ws.RepoPath, Config: ws.Config,
+			Claude: claude[ws.Dir], Panes: open[ws.Dir],
 		}
-		_, infos[i].Open = open[ws.Name]
+		_, infos[i].Open = open[ws.Dir]
 	}
 	a.mu.Unlock()
+	repos := make([]RepoInfo, len(cfg.Repo))
+	for i, r := range cfg.Repo {
+		// merged puts the window's own repos first.
+		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(a.own.Repo), Config: r.Config}
+	}
 	return Snapshot{
 		Error:      a.cfgErr,
 		Workspaces: infos,
-		CanCreate:  len(a.cfg.Repo) > 0,
-		Terminal:   strings.TrimSpace(a.cfg.Terminal) != "",
-		FontFamily: a.cfg.FontFamily,
-		FontSize:   a.cfg.FontSize,
+		Repos:      repos,
+		CanCreate:  len(cfg.Repo) > 0,
+		Terminal:   strings.TrimSpace(cfg.Terminal) != "",
+		FontFamily: cfg.FontFamily,
+		FontSize:   cfg.FontSize,
 		Shortcuts:  shortcutInfos(),
 		Version:    version,
 	}
@@ -242,22 +373,32 @@ func (a *App) Reload() Snapshot {
 	return a.State()
 }
 
-// TakeInitial returns the workspace to select at startup, once.
+// TakeInitial returns the dir of the workspace to select at startup, once. It
+// is looked up here rather than in newApp, so that a worktree of an added repo,
+// restored after newApp, is found too.
 func (a *App) TakeInitial() string {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	n := a.initial
-	a.initial = ""
-	return n
+	n, setup := a.initial, a.setup
+	a.initial, a.setup = "", false
+	a.mu.Unlock()
+	ws, ok := a.find(n)
+	if n == "" || !ok {
+		return ""
+	}
+	if setup {
+		// `grove new` launched us for a fresh worktree: queue its setup command.
+		a.sess.ensure(ws, a.repoFor(ws).Setup)
+	}
+	return ws.Dir // the frontend selects by dir
 }
 
-// Open ensures a workspace's panes exist and returns them.
-func (a *App) Open(name string) ([]Pane, error) {
-	ws, ok := a.find(name)
+// Open ensures the workspace at dir has its panes and returns them.
+func (a *App) Open(dir string) ([]Pane, error) {
+	ws, ok := a.find(dir)
 	if !ok {
 		a.reload()
-		if ws, ok = a.find(name); !ok {
-			return nil, fmt.Errorf("no workspace named %q", name)
+		if ws, ok = a.find(dir); !ok {
+			return nil, fmt.Errorf("no workspace at %s", dir)
 		}
 	}
 	return a.sess.ensure(ws, ""), nil
@@ -269,13 +410,13 @@ func (a *App) Size(id string, cols, rows int) error { return a.sess.start(id, co
 // Write sends keyboard input to a pane.
 func (a *App) Write(id, data string) { a.sess.write(id, data) }
 
-// NewTab opens a tab in a workspace: kind "claude" runs its configured Claude
-// command (plain `claude` if none), "shell" a login shell. A workspace that
-// isn't open opens with just this tab.
-func (a *App) NewTab(name, kind string) (Pane, error) {
-	ws, ok := a.find(name)
+// NewTab opens a tab in the workspace at dir: kind "claude" runs its configured
+// Claude command (plain `claude` if none), "shell" a login shell. A workspace
+// that isn't open opens with just this tab.
+func (a *App) NewTab(dir, kind string) (Pane, error) {
+	ws, ok := a.find(dir)
 	if !ok {
-		return Pane{}, fmt.Errorf("no workspace named %q", name)
+		return Pane{}, fmt.Errorf("no workspace at %s", dir)
 	}
 	cmd := ""
 	switch kind {
@@ -301,13 +442,13 @@ func (a *App) TabBusy(id string) bool { return a.sess.busy(id) }
 // SeenTab clears a tab's "Claude wants you" mark once it is looked at.
 func (a *App) SeenTab(id string) { a.sess.seen(id) }
 
-// Close stops a workspace's panes; the worktree stays on disk.
-func (a *App) Close(name string) error { return a.sess.close(name) }
+// Close stops the panes of the workspace at dir; the worktree stays on disk.
+func (a *App) Close(dir string) error { return a.sess.close(dir) }
 
-// Create makes a worktree on a new branch and opens it (setup queued). It
-// returns the new workspace's name.
-func (a *App) Create(intention, branch, base string) (string, error) {
-	r, err := a.repo()
+// Create makes a worktree on a new branch in the repo at repoPath and opens it
+// (setup queued). It returns the new workspace's dir.
+func (a *App) Create(repoPath, intention, branch, base string) (string, error) {
+	r, err := a.repo(repoPath)
 	if err != nil {
 		return "", err
 	}
@@ -319,8 +460,8 @@ func (a *App) Create(intention, branch, base string) (string, error) {
 }
 
 // Checkout makes a worktree on an existing branch and opens it (setup queued).
-func (a *App) Checkout(branch, name string) (string, error) {
-	r, err := a.repo()
+func (a *App) Checkout(repoPath, branch, name string) (string, error) {
+	r, err := a.repo(repoPath)
 	if err != nil {
 		return "", err
 	}
@@ -334,7 +475,7 @@ func (a *App) Checkout(branch, name string) (string, error) {
 func (a *App) opened(ws Workspace, r Repo) string {
 	a.reload()
 	a.sess.ensure(ws, r.Setup)
-	return ws.Name
+	return ws.Dir
 }
 
 // RemoveResult is how a worktree removal went, shown in its sidebar row.
@@ -349,13 +490,13 @@ type RemoveResult struct {
 // maxDirtyLines caps the uncommitted changes listed in a dirty removal's detail.
 const maxDirtyLines = 20
 
-// Remove removes a workspace's worktree, stops its panes, then safely deletes
-// its branch (git branch -d). With uncommitted changes and !force it removes
+// Remove removes the worktree at dir, stops its panes, then safely deletes its
+// branch (git branch -d). With uncommitted changes and !force it removes
 // nothing and reports "dirty". The list is not rescanned; the frontend reloads.
-func (a *App) Remove(name string, force bool) RemoveResult {
-	ws, ok := a.find(name)
+func (a *App) Remove(dir string, force bool) RemoveResult {
+	ws, ok := a.find(dir)
 	if !ok {
-		return RemoveResult{Status: "failed", Reason: fmt.Sprintf("no workspace named %q", name)}
+		return RemoveResult{Status: "failed", Reason: fmt.Sprintf("no workspace at %s", dir)}
 	}
 	if ws.RepoPath == "" {
 		return RemoveResult{Status: "failed", Reason: "not a git worktree"}
@@ -380,8 +521,8 @@ func (a *App) Remove(name string, force bool) RemoveResult {
 		r.Reason, r.Detail = explain(err)
 		return r
 	}
-	if a.sess.isOpen(name) {
-		_ = a.sess.close(name)
+	if a.sess.isOpen(ws.Dir) {
+		_ = a.sess.close(ws.Dir)
 	}
 	r := RemoveResult{Status: "removed"}
 	a.gitMu.Lock()
@@ -407,40 +548,105 @@ func (a *App) DeleteBranch(repoPath, branch string, force bool) BranchResult {
 	return r
 }
 
-// Branches lists local and remote branches, for autocompletion.
-func (a *App) Branches() []string {
-	r, err := a.repo()
+// Branches lists the repo's local and remote branches, for autocompletion.
+func (a *App) Branches(repoPath string) []string {
+	r, err := a.repo(repoPath)
 	if err != nil {
 		return nil
 	}
 	return branchList(expandPath(r.Path))
 }
 
-// DefaultBase is the prefilled start-point for new branches.
-func (a *App) DefaultBase() string {
-	r, err := a.repo()
+// DefaultBase is the repo's prefilled start-point for new branches.
+func (a *App) DefaultBase(repoPath string) string {
+	r, err := a.repo(repoPath)
 	if err != nil {
 		return ""
 	}
 	return defaultBase(r)
 }
 
-// OpenInTerminal opens a workspace in the configured external terminal.
-func (a *App) OpenInTerminal(name string) error {
-	ws, ok := a.find(name)
+// OpenInTerminal opens the workspace at dir in the configured external terminal.
+func (a *App) OpenInTerminal(dir string) error {
+	ws, ok := a.find(dir)
 	if !ok {
-		return fmt.Errorf("no workspace named %q", name)
+		return fmt.Errorf("no workspace at %s", dir)
 	}
-	return openInTerminal(ws, a.cfg.Terminal)
+	return openInTerminal(ws, a.config().Terminal)
+}
+
+// AddRepo picks a repository folder and shows its worktrees in this window too,
+// remembering it for next launch. It returns the repo's name ("" if cancelled).
+// A window with no repo of its own (launched from Finder) becomes that repo's.
+func (a *App) AddRepo() (string, error) {
+	if a.cfgErr != "" {
+		return "", a.OpenRepo()
+	}
+	dir, err := wr.OpenDirectoryDialog(a.ctx, wr.OpenDialogOptions{Title: "Add Repository"})
+	if err != nil || dir == "" {
+		return "", err
+	}
+	name, err := a.addRepo(dir)
+	if err == nil {
+		a.saveRepos()
+	}
+	return name, err
+}
+
+// RemoveRepo takes the added repo with a [[repo]] at path out of the window,
+// with everything else its config lists, stopping their open worktrees.
+// Nothing is removed from disk.
+func (a *App) RemoveRepo(path string) error {
+	a.mu.Lock()
+	i := slices.IndexFunc(a.added, func(r addedRepo) bool {
+		return slices.ContainsFunc(r.cfg.Repo, func(rp Repo) bool { return expandPath(rp.Path) == path })
+	})
+	if i < 0 {
+		a.mu.Unlock()
+		return errors.New("only a repository added to this window can be removed")
+	}
+	r := a.added[i]
+	// The worktrees as listed, not rediscovered: the repo's folder may have moved.
+	var dirs []string
+	for _, ws := range a.ws {
+		if ws.Config == r.cfg.Path {
+			dirs = append(dirs, ws.Dir)
+		}
+	}
+	a.added = slices.Delete(a.added, i, i+1)
+	a.cfg = a.merged()
+	a.mu.Unlock()
+	_ = r.ln.Close()
+	for _, dir := range dirs {
+		if a.sess.isOpen(dir) {
+			_ = a.sess.close(dir)
+		}
+	}
+	a.saveRepos()
+	a.reload()
+	return nil
+}
+
+// Reveal shows a folder in the file manager: selected in Finder on macOS, opened
+// elsewhere.
+func (a *App) Reveal(path string) error {
+	c := exec.Command("xdg-open", path)
+	if runtime.GOOS == "darwin" {
+		c = exec.Command("open", "-R", path)
+	}
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go func() { _ = c.Wait() }() // reap
+	return nil
 }
 
 // OpenURL opens a link clicked in a pane in the default browser.
 func (a *App) OpenURL(url string) { wr.BrowserOpenURL(a.ctx, url) }
 
-// OpenRepo picks a repository folder and opens its grove window. Each window is
-// tied to one repo's config, so this starts `grove gui` there; that process
-// focuses the repo's existing window if one is open. A window with no repo
-// (launched from Finder) closes, handing over to the new one.
+// OpenRepo picks a repository folder and opens it in its own grove window: it
+// starts `grove gui` there, which focuses the repo's window if one is open. A
+// window with no repo (launched from Finder) closes, handing over to the new one.
 func (a *App) OpenRepo() error {
 	dir, err := wr.OpenDirectoryDialog(a.ctx, wr.OpenDialogOptions{Title: "Open Repository"})
 	if err != nil || dir == "" {
@@ -459,7 +665,8 @@ func (a *App) OpenRepo() error {
 
 // shortcut is one menu command. The menu is the single source of shortcuts: its
 // accelerators fire even while a terminal pane has focus, and the help overlay
-// lists this same table.
+// lists this same table. An entry with no key is a plain menu item, left out of
+// the help overlay; one with no action is a separator.
 type shortcut struct {
 	menu, label, action, key string
 	mods                     []keys.Modifier
@@ -472,7 +679,9 @@ var (
 )
 
 var shortcuts = []shortcut{
-	{"File", "Open Repository…", "open-repo", "o", cmdMod},
+	{"File", "Add Repository…", "add-repo", "o", cmdMod},
+	{"File", "Open Repository in New Window…", "open-repo", "", nil}, // rare: no shortcut
+	{"File", "Remove Repository from Window", "remove-repo", "", nil},
 	{"File", "", "", "", nil},
 	{"File", "New Worktree…", "new", "n", cmdMod},
 	{"File", "New Worktree from Branch…", "checkout", "n", shiftMod},
@@ -531,7 +740,7 @@ type ShortcutInfo struct {
 func shortcutInfos() []ShortcutInfo {
 	var out []ShortcutInfo
 	for _, s := range shortcuts {
-		if s.action != "" {
+		if s.key != "" {
 			out = append(out, ShortcutInfo{s.menu, strings.TrimSuffix(s.label, "…"), accelLabel(accel(s.key, s.mods))})
 		}
 	}
@@ -587,7 +796,11 @@ func (a *App) buildMenu(names []string) *menu.Menu {
 			continue
 		}
 		action := s.action
-		sub(s.menu).AddText(s.label, accel(s.key, s.mods), func(*menu.CallbackData) { a.emit("menu", action) })
+		var acc *keys.Accelerator
+		if s.key != "" {
+			acc = accel(s.key, s.mods)
+		}
+		sub(s.menu).AddText(s.label, acc, func(*menu.CallbackData) { a.emit("menu", action) })
 	}
 	gm := subs["Go"]
 	if len(names) > 0 {
@@ -613,17 +826,32 @@ func (a *App) buildMenu(names []string) *menu.Menu {
 	return m
 }
 
-// setMenu installs the menu, rebuilding it only when the workspace names change.
-func (a *App) setMenu() {
-	a.mu.Lock()
+// menuLabels are the Go menu's worktree items: their names, prefixed with
+// their repo's when the window shows several repos, whose worktrees can share
+// names. Callers hold mu.
+func (a *App) menuLabels() []string {
 	names := make([]string, len(a.ws))
 	for i, ws := range a.ws {
 		names[i] = ws.Name
+		// A prefixed repo's names start with its name already.
+		if len(a.cfg.Repo) > 1 && ws.RepoName != "" && !strings.HasPrefix(ws.Name, ws.RepoName+"/") {
+			names[i] = ws.RepoName + "/" + ws.Name
+		}
 	}
+	return names
+}
+
+// setMenu installs the menu, rebuilding it only when its worktree labels change.
+func (a *App) setMenu() {
+	if a.ctx == nil {
+		return // before startup, which installs it (restoreRepos reloads that early)
+	}
+	a.mu.Lock()
+	names := a.menuLabels()
 	same := slices.Equal(names, a.menuNames)
 	a.menuNames = names
 	a.mu.Unlock()
-	if same || a.ctx == nil {
+	if same {
 		return
 	}
 	wr.MenuSetApplicationMenu(a.ctx, a.buildMenu(names))
@@ -635,10 +863,10 @@ func runGUI(initial string, setup bool) {
 	fixPath()
 	a := newApp(initial, setup)
 	if a.cfgErr == "" {
-		ln, err := ipcServe(a.cfg.socketPath(), a.handle)
+		ln, err := ipcServe(a.own.socketPath(), a.handle)
 		if err != nil {
 			// Another window has this repo: hand it the request and bow out.
-			if showInGUI(a.cfg, initial, setup) == nil {
+			if showInGUI(a.own, initial, setup) == nil {
 				return
 			}
 			fmt.Fprintf(os.Stderr, "grove: %v\n", err)
@@ -646,8 +874,10 @@ func runGUI(initial string, setup bool) {
 		}
 		defer func() {
 			_ = ln.Close()
-			_ = os.Remove(a.cfg.socketPath())
+			_ = os.Remove(a.own.socketPath())
+			a.closeRepos()
 		}()
+		a.restoreRepos()
 	}
 
 	title := "grove"

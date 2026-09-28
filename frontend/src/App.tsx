@@ -5,20 +5,33 @@ import type { main } from '../wailsjs/go/models'
 import { WorkspaceHeader, WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
+import { groups } from './repos'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { errText, key } from './util'
 
+// Worktrees are keyed by dir everywhere: two repos in one window can share
+// worktree names.
 type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; resolve: (yes: boolean) => void }
-type Modal = { kind: 'new' } | { kind: 'checkout' } | { kind: 'help' } | Confirm
+type Modal = { kind: 'new' | 'checkout'; repo: string } | { kind: 'help' } | Confirm
 
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
-const SPLIT_KEY = 'grove.split:' // + worktree name: its split ratio
+const SPLIT_KEY = 'grove.split:' // + worktree dir: its split ratio
+const COLLAPSED_KEY = 'grove.collapsed' // repo paths whose sidebar groups are collapsed
 const MONO = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace'
 
-const savedRatio = (ws: string) => {
-  const r = Number(localStorage.getItem(SPLIT_KEY + ws))
+const savedRatio = (dir: string) => {
+  const r = Number(localStorage.getItem(SPLIT_KEY + dir))
   return r > 0 && r < 1 ? r : 0.5
+}
+
+const savedCollapsed = (): string[] => {
+  try {
+    const v = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]')
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
 }
 
 // Focus a pane's terminal, waiting a few frames for it to mount and for a
@@ -43,16 +56,24 @@ export default function App() {
   const [fontDelta, setFontDelta] = useState(() => Number(localStorage.getItem(FONT_KEY)) || 0)
   const [removals, setRemovals] = useState<rm.Removals>({})
   const [sidebarW, setSidebarW] = useState(() => sidebarWidth(Number(localStorage.getItem(SIDEBAR_KEY)) || 250))
+  const [collapsed, setCollapsed] = useState(savedCollapsed)
+  // The repo whose Remove from window is being confirmed in the sidebar, and
+  // where focus was when it was asked.
+  const [repoConfirm, setRepoConfirm] = useState<{ path: string; back: Element | null } | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
   const snapSeq = useRef({ asked: 0, shown: 0 })
 
   const all = snap?.workspaces ?? []
+  const repos = snap?.repos ?? []
   const q = filter.trim().toLowerCase()
   // Rows being removed stay in the list, where they were, until they're done.
   const listed = rm.withRemovals(all, removals)
-  const filtered = q ? listed.filter((w) => w.name.toLowerCase().includes(q) || w.branch.toLowerCase().includes(q)) : listed
-  const sel = all.find((w) => w.name === selected)
-  const selTab = focusedTab(sel?.open ? layouts[sel.name] : undefined)
+  const grouped = groups(listed, repos, collapsed, q)
+  // The rows shown: the list cursor never lands on a hidden one, nor on one
+  // whose group the remove confirm stands in for.
+  const filtered = grouped.flatMap((g) => (g.repo && g.repo.path === repoConfirm?.path ? [] : g.rows))
+  const sel = all.find((w) => w.dir === selected)
+  const selTab = focusedTab(sel?.open ? layouts[sel.dir] : undefined)
   const font = {
     family: snap?.fontFamily || MONO,
     size: Math.min(32, Math.max(8, (snap?.fontSize || 13) + fontDelta)),
@@ -72,7 +93,7 @@ export default function App() {
     setSnap(s)
     setLayouts((ls) => {
       const next: Record<string, Layout> = {}
-      for (const w of s.workspaces ?? []) if (w.open) next[w.name] = sync(ls[w.name], w.panes ?? [], savedRatio(w.name))
+      for (const w of s.workspaces ?? []) if (w.open) next[w.dir] = sync(ls[w.dir], w.panes ?? [], savedRatio(w.dir))
       return next
     })
     setRemovals((rs) => rm.sync(rs, s.workspaces ?? []))
@@ -82,7 +103,7 @@ export default function App() {
     await fetchSnap(api.Reload)
     if (manual) say('refreshed')
   }
-  const setLayout = (ws: string, f: (l: Layout) => Layout) => setLayouts((ls) => (ls[ws] ? { ...ls, [ws]: f(ls[ws]) } : ls))
+  const setLayout = (dir: string, f: (l: Layout) => Layout) => setLayouts((ls) => (ls[dir] ? { ...ls, [dir]: f(ls[dir]) } : ls))
   // focusNow puts keyboard focus on the selected worktree's focused tab once
   // the next render is on screen.
   const focusNow = () => setFocusReq((n) => n + 1)
@@ -106,14 +127,14 @@ export default function App() {
   const confirm = (title: string, detail?: string, danger?: boolean) =>
     new Promise<boolean>((resolve) => setModal({ kind: 'confirm', title, detail, danger, resolve }))
 
-  // openWs starts a workspace's panes if needed and switches to it.
-  async function openWs(name: string) {
-    // Not a worktree being removed. A gone row's name is a new worktree's, which
+  // openWs starts the panes of the workspace at dir if needed and switches to it.
+  async function openWs(dir: string) {
+    // Not a worktree being removed. A gone row's dir is a new worktree's, which
     // may open (just made) before its snapshot drops the row.
-    if (!rm.usable(removals[name]) && !removals[name].gone) return
+    if (!rm.usable(removals[dir]) && !removals[dir].gone) return
     try {
-      await api.Open(name)
-      setSelected(name)
+      await api.Open(dir)
+      setSelected(dir)
       setFilter('')
       setListFocused(false)
       filterRef.current?.blur()
@@ -125,7 +146,7 @@ export default function App() {
   }
 
   function focusList() {
-    const i = filtered.findIndex((w) => w.name === selected)
+    const i = filtered.findIndex((w) => w.dir === selected)
     setCursor(Math.max(0, i))
     filterRef.current?.focus()
     filterRef.current?.select()
@@ -145,7 +166,7 @@ export default function App() {
     if (!ws.open) return say(`${ws.name} is not open`)
     if (!(await confirm(`Close ${ws.name}?`, 'Stops its panes. The worktree stays on disk.'))) return say('cancelled')
     try {
-      await api.Close(ws.name)
+      await api.Close(ws.dir)
       say(`closed ${ws.name}`)
       focusList() // ↩ reopens it
     } catch (e) {
@@ -159,31 +180,31 @@ export default function App() {
     // A manual [[workspace]] isn't a worktree: Remove refuses it, in its row.
     if (ws.repoPath && !(await confirm(`Delete worktree ${ws.name}?`, `Removes ${ws.dir} and stops its panes.`, true))) return
     setRemovals((rs) => rm.start(rs, ws, listed))
-    await removeRow(ws.name, false)
+    await removeRow(ws.dir, false)
   }
 
-  async function removeRow(name: string, force: boolean) {
+  async function removeRow(dir: string, force: boolean) {
     let res: main.RemoveResult
     try {
-      res = await api.Remove(name, force)
+      res = await api.Remove(dir, force)
     } catch (e) {
       res = { status: 'failed', reason: errText(e), detail: errText(e), branchKept: '', branchDetail: '' }
     }
-    setRemovals((rs) => rm.result(rs, name, res, Date.now()))
+    setRemovals((rs) => rm.result(rs, dir, res, Date.now()))
     if (res.status === 'removed') await reload(false) // drop it from menus; its row stays until done
   }
 
   async function onRemoval(r: rm.Removal, action: RemovalAction) {
-    const name = r.ws.name
+    const dir = r.ws.dir
     switch (action) {
       case 'keep':
-        return setRemovals((rs) => rm.keep(rs, name))
+        return setRemovals((rs) => rm.keep(rs, dir))
       case 'dismiss':
-        return setRemovals((rs) => rm.dismiss(rs, name))
+        return setRemovals((rs) => rm.dismiss(rs, dir))
       case 'force':
-        if (!(await confirm(`Force remove ${name}?`, 'Its uncommitted changes will be lost.', true))) return
-        setRemovals((rs) => rm.force(rs, name))
-        return removeRow(name, true)
+        if (!(await confirm(`Force remove ${r.ws.name}?`, 'Its uncommitted changes will be lost.', true))) return
+        setRemovals((rs) => rm.force(rs, dir))
+        return removeRow(dir, true)
       case 'delete-branch': {
         const unmerged = r.kind === 'kept' && r.reason === 'unmerged'
         const detail = unmerged ? "It isn't merged, so its commits will be lost." : 'Commits only on this branch will be lost.'
@@ -195,20 +216,21 @@ export default function App() {
         } catch (e) {
           res = { kept: errText(e), detail: errText(e) }
         }
-        setRemovals((rs) => rm.branchResult(rs, name, res, Date.now()))
+        setRemovals((rs) => rm.branchResult(rs, dir, res, Date.now()))
       }
     }
   }
 
-  // newTab opens a Claude or shell tab in a worktree (opening the worktree with
-  // just that tab if it isn't open) and shows it in pane i, else the focused one.
-  async function newTab(ws: string | undefined, kind: 'claude' | 'shell', i?: number) {
-    if (!ws) return say('no worktree selected')
-    if (!rm.usable(removals[ws])) return // no new process in a worktree being deleted
+  // newTab opens a Claude or shell tab in the worktree at dir (opening the
+  // worktree with just that tab if it isn't open) and shows it in pane i, else
+  // the focused one.
+  async function newTab(dir: string | undefined, kind: 'claude' | 'shell', i?: number) {
+    if (!dir) return say('no worktree selected')
+    if (!rm.usable(removals[dir])) return // no new process in a worktree being deleted
     try {
-      const p = await api.NewTab(ws, kind)
+      const p = await api.NewTab(dir, kind)
       await refresh() // so no older snapshot can drop the tab after it's placed
-      setLayout(ws, (l) => place(l, p, i ?? l.focus))
+      setLayout(dir, (l) => place(l, p, i ?? l.focus))
       focusNow()
     } catch (e) {
       say(errText(e), true)
@@ -216,12 +238,12 @@ export default function App() {
   }
 
   // closeTab stops a tab's process, asking first if that interrupts something.
-  async function closeTab(ws: string, id: string) {
-    const p = all.find((w) => w.name === ws)?.panes?.find((p) => p.id === id)
+  async function closeTab(dir: string, id: string) {
+    const p = all.find((w) => w.dir === dir)?.panes?.find((p) => p.id === id)
     if (!p) return
     if (await api.TabBusy(id)) {
       const why = p.kind === 'claude' ? 'Claude is in the middle of a task.' : 'A process is still running in it.'
-      if (!(await confirm(`Close tab ${layouts[ws]?.labels[id] ?? p.name}?`, `${why} Closing the tab stops it.`))) return say('cancelled')
+      if (!(await confirm(`Close tab ${layouts[dir]?.labels[id] ?? p.name}?`, `${why} Closing the tab stops it.`))) return say('cancelled')
     }
     try {
       await api.CloseTab(id)
@@ -235,29 +257,83 @@ export default function App() {
   // focused tab.
   function change(f: (l: Layout) => Layout) {
     if (!sel?.open) return
-    setLayout(sel.name, f)
+    setLayout(sel.dir, f)
     focusNow()
   }
 
   // splitRight moves the focused tab into a new right pane; with a single tab
   // there, a new shell opens in the right pane instead.
-  function splitRight(ws = sel?.name) {
-    const l = ws ? layouts[ws] : undefined
-    if (!ws || !l) return say('open a worktree first')
-    if (!split(l)) return newTab(ws, 'shell', 1)
-    setLayout(ws, (l) => split(l) ?? l)
+  function splitRight(dir = sel?.dir) {
+    const l = dir ? layouts[dir] : undefined
+    if (!dir || !l) return say('open a worktree first')
+    if (!split(l)) return newTab(dir, 'shell', 1)
+    setLayout(dir, (l) => split(l) ?? l)
     focusNow()
   }
 
   function cycleWs(d: number) {
-    const open = all.filter((w) => w.open && rm.usable(removals[w.name]))
+    const open = all.filter((w) => w.open && rm.usable(removals[w.dir]))
     if (open.length === 0) return say('no worktrees are open')
-    const i = open.findIndex((w) => w.name === selected)
+    const i = open.findIndex((w) => w.dir === selected)
     const next = i < 0 ? open[d > 0 ? 0 : open.length - 1] : open[(i + d + open.length) % open.length]
-    openWs(next.name)
+    openWs(next.dir)
   }
 
   const openRepo = () => api.OpenRepo().catch((e) => say(errText(e), true))
+  const addRepo = () => api.AddRepo().then((name) => name && say(`added ${name}`), (e) => say(errText(e), true))
+
+  // The repo header menu's actions.
+  const newIn = (path: string) => !busy && setModal({ kind: 'new', repo: path })
+  const reveal = (path: string) => api.Reveal(path).catch((e) => say(errText(e), true))
+  function toggleRepo(path: string) {
+    const next = collapsed.includes(path) ? collapsed.filter((p) => p !== path) : [...collapsed, path]
+    setCollapsed(next)
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next))
+  }
+
+  // A worktree going with the repo (from its config) that is mid-removal holds up
+  // taking the repo out of the window, so the removal's outcome still has a row
+  // to show in.
+  const removingIn = (path: string) => {
+    const config = repos.find((r) => r.path === path)?.config
+    return listed.find((w) => w.config === config && rm.inFlight(removals[w.dir]))
+  }
+
+  // askRemoveRepo swaps an added repo's sidebar group for an inline confirm.
+  function askRemoveRepo(path: string) {
+    const w = removingIn(path)
+    if (w) return say(`wait for ${w.name} to finish removing`)
+    setFilter('') // so the group, and with it the confirm, is shown
+    setRepoConfirm({ path, back: document.activeElement })
+  }
+
+  // answerRemoveRepo takes the repo out of the window (its worktrees and files
+  // stay on disk; ⌘O adds it back), or doesn't, and ends the confirm.
+  async function answerRemoveRepo(remove: boolean) {
+    if (!repoConfirm || (remove && busy)) return // the status bar shows what's running
+    const { path, back } = repoConfirm
+    const r = repos.find((r) => r.path === path)
+    const w = removingIn(path)
+    if (remove && w) return say(`wait for ${w.name} to finish removing`)
+    let done = false
+    if (remove && r) {
+      done = !!(await run(`removing ${r.name} from this window`, async () => {
+        await api.RemoveRepo(r.path)
+        await refresh() // so its group goes with the confirm, rather than after
+        return true
+      }))
+      if (done) say(`removed ${r.name} from this window`)
+    }
+    setRepoConfirm(null)
+    // Focus goes to the worktree list once the repo has gone (↩ reopens your
+    // worktree, if it's still there), else back where it was, else to the
+    // repo's ⋯.
+    requestAnimationFrame(() => {
+      if (done) return focusList()
+      if (back instanceof HTMLElement && back.isConnected && back !== document.body) return back.focus()
+      document.querySelector<HTMLElement>(`[data-repo="${CSS.escape(path)}"]`)?.focus()
+    })
+  }
 
   function setFont(d: number) {
     setFontDelta(d)
@@ -279,17 +355,27 @@ export default function App() {
     const ws = target()
     const need = (f: (w: main.WorkspaceInfo) => unknown) => {
       if (!ws) return say('no worktree selected')
-      if (rm.usable(removals[ws.name])) return f(ws) // else its row says what's happening
+      if (rm.usable(removals[ws.dir])) return f(ws) // else its row says what's happening
     }
     switch (action) {
+      case 'add-repo':
+        return addRepo()
       case 'open-repo':
         return openRepo()
+      case 'remove-repo':
+        return need((w) => {
+          const r = repos.find((r) => r.path === w.repoPath)
+          if (!r) return say(`${w.name} is not in a repository`)
+          if (!r.added) return say(`${r.name} is this window's own repository, so it can't be removed`)
+          askRemoveRepo(r.path)
+        })
       case 'new':
       case 'checkout':
         if (!snap?.canCreate) return say('no [[repo]] configured to create into')
-        return setModal({ kind: action })
+        // Create in the targeted worktree's repo; the form can switch it.
+        return setModal({ kind: action, repo: ws?.repoPath || repos[0].path })
       case 'terminal':
-        return need((w) => api.OpenInTerminal(w.name).then(() => say(`opened ${w.name} in terminal`), (e) => say(errText(e), true)))
+        return need((w) => api.OpenInTerminal(w.dir).then(() => say(`opened ${w.name} in terminal`), (e) => say(errText(e), true)))
       case 'close':
         return need(closeWs)
       case 'delete':
@@ -303,9 +389,9 @@ export default function App() {
       case 'prev-ws':
         return cycleWs(-1)
       case 'new-claude':
-        return newTab(sel?.name, 'claude')
+        return newTab(sel?.dir, 'claude')
       case 'new-shell':
-        return newTab(sel?.name, 'shell')
+        return newTab(sel?.dir, 'shell')
       case 'next-tab':
         return change((l) => cycle(l, 1))
       case 'prev-tab':
@@ -328,8 +414,12 @@ export default function App() {
         return setModal({ kind: 'help' })
     }
     if (action.startsWith('ws:')) {
+      // ⌘1-9 number the list's rows, so one hidden in a collapsed group has no
+      // number shown and doesn't open.
       const w = all[Number(action.slice(3))]
-      if (w) openWs(w.name)
+      if (w && w.repoPath === repoConfirm?.path) return say(`cancel removing ${w.repo} to open ${w.name}`)
+      if (w && collapsed.includes(w.repoPath) && !filtered.some((f) => f.dir === w.dir)) return say(`expand ${w.repo} to open ${w.name}`)
+      if (w) openWs(w.dir)
     }
   }
 
@@ -340,7 +430,7 @@ export default function App() {
     const offs = [
       EventsOn('changed', () => live.current.refresh()),
       EventsOn('menu', (a: string) => live.current.dispatch(a)),
-      EventsOn('open', (name: string) => live.current.openWs(name)),
+      EventsOn('open', (dir: string) => live.current.openWs(dir)),
     ]
     // Rescan when the window regains focus, so worktrees made elsewhere appear;
     // the tab in front of you has now been seen.
@@ -404,7 +494,7 @@ export default function App() {
   const emptyRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (!sel?.open && document.activeElement === document.body) emptyRef.current?.focus()
-  }, [sel?.name, sel?.open])
+  }, [sel?.dir, sel?.open])
 
   // The tab in front of you has been seen: clear its "Claude wants you" mark
   // when it comes to the front, or when a mark arrives while it is there.
@@ -416,22 +506,23 @@ export default function App() {
   // Forget a selection whose worktree is gone. Its terminals went with it, so
   // keys go to the worktree list rather than nowhere.
   useEffect(() => {
-    if (selected && snap && !all.some((w) => w.name === selected)) {
+    if (selected && snap && !all.some((w) => w.dir === selected)) {
       setSelected(null)
       if (!modal && document.activeElement === document.body) focusList()
     }
   }, [snap])
 
   // The list cursor follows its row when rows above it come or go (a removed
-  // row collapsing), so ↩ and ⌘⌫ act on the row you picked; else it is clamped.
+  // row collapsing, a repo's group), so ↩ and ⌘⌫ act on the row you picked;
+  // else it is clamped.
   const cursorRow = useRef<string | undefined>(undefined)
   useEffect(() => {
-    cursorRow.current = filtered[cursor]?.name
+    cursorRow.current = filtered[cursor]?.dir
   })
   useLayoutEffect(() => {
-    const i = filtered.findIndex((w) => w.name === cursorRow.current)
+    const i = filtered.findIndex((w) => w.dir === cursorRow.current)
     if (i >= 0) setCursor(i)
-  }, [listed.map((w) => w.name).join('\n')])
+  }, [listed.map((w) => w.dir).join('\n'), collapsed.join('\n'), repoConfirm?.path])
   useEffect(() => setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1))), [filtered.length])
 
   // Run removal rows' timers: "Removed." collapsing away, a kept branch's wait.
@@ -454,7 +545,7 @@ export default function App() {
         <h1>No repository open</h1>
         <p>Pick a repo with a <code>.grove.toml</code> (create one with <code>grove init</code>), or run <code>grove</code> inside a repo.</p>
         <button className="primary" autoFocus onClick={openRepo}>
-          Open Repository… <kbd>{key(snap, 'Open Repository')}</kbd>
+          Open Repository… <kbd>{key(snap, 'Add Repository')}</kbd>
         </button>
         <pre>{snap.error}</pre>
       </div>
@@ -470,7 +561,7 @@ export default function App() {
     } else if (e.key === 'Enter') {
       e.preventDefault()
       const w = filtered[cursor]
-      if (w && rm.usable(removals[w.name])) openWs(w.name)
+      if (w && rm.usable(removals[w.dir])) openWs(w.dir)
     } else if (e.key === 'Escape') {
       e.preventDefault()
       leaveList()
@@ -485,6 +576,7 @@ export default function App() {
       <Sidebar
         snap={snap}
         all={all}
+        groups={grouped}
         filtered={filtered}
         selected={selected}
         cursor={cursor}
@@ -494,17 +586,25 @@ export default function App() {
         onFilterChange={(v) => {
           setFilter(v)
           setCursor(0)
+          setRepoConfirm(null) // it could be filtered out of sight
         }}
         onFilterFocus={() => {
           setListFocused(true)
-          setCursor(Math.max(0, filtered.findIndex((w) => w.name === selected)))
+          setCursor(Math.max(0, filtered.findIndex((w) => w.dir === selected)))
         }}
         onFilterBlur={() => setListFocused(false)}
         onFilterKey={onFilterKey}
         onOpen={openWs}
         removals={removals}
         onRemoval={onRemoval}
-        onHold={(name, held) => setRemovals((rs) => rm.hold(rs, name, held, Date.now()))}
+        onHold={(dir, held) => setRemovals((rs) => rm.hold(rs, dir, held, Date.now()))}
+        collapsed={collapsed}
+        onNewIn={newIn}
+        onToggle={toggleRepo}
+        onReveal={reveal}
+        onAskRemove={askRemoveRepo}
+        confirm={repoConfirm?.path ?? null}
+        onConfirm={answerRemoveRepo}
         width={sidebarW}
         onResize={resizeSidebar}
       />
@@ -512,25 +612,25 @@ export default function App() {
       <main className="main">
         {openList.map(
           (w) =>
-            layouts[w.name] && (
+            layouts[w.dir] && (
               <WorkspaceView
-                key={w.name}
+                key={w.dir}
                 ws={w}
-                layout={layouts[w.name]}
-                visible={w.name === selected}
+                layout={layouts[w.dir]}
+                visible={w.dir === selected}
                 font={font}
                 snap={snap}
                 onLayout={(f, focus = true) => {
-                  setLayout(w.name, f)
+                  setLayout(w.dir, f)
                   if (focus) focusNow()
                 }}
                 onRatio={(ratio, save) => {
-                  setLayout(w.name, (l) => ({ ...l, ratio }))
-                  if (save) localStorage.setItem(SPLIT_KEY + w.name, String(ratio))
+                  setLayout(w.dir, (l) => ({ ...l, ratio }))
+                  if (save) localStorage.setItem(SPLIT_KEY + w.dir, String(ratio))
                 }}
-                onNewTab={(kind, i) => newTab(w.name, kind, i)}
-                onCloseTab={(id) => closeTab(w.name, id)}
-                onSplit={() => splitRight(w.name)}
+                onNewTab={(kind, i) => newTab(w.dir, kind, i)}
+                onCloseTab={(id) => closeTab(w.dir, id)}
+                onSplit={() => splitRight(w.dir)}
               />
             ),
         )}
@@ -541,10 +641,10 @@ export default function App() {
                 <WorkspaceHeader ws={sel} />
                 <p>No sessions open in this worktree.</p>
                 <div className="actions">
-                  <button ref={emptyRef} onClick={() => newTab(sel.name, 'claude')}>
+                  <button ref={emptyRef} onClick={() => newTab(sel.dir, 'claude')}>
                     New Claude tab <kbd>{key(snap, 'New Claude Tab')}</kbd>
                   </button>
-                  <button onClick={() => newTab(sel.name, 'shell')}>
+                  <button onClick={() => newTab(sel.dir, 'shell')}>
                     New shell <kbd>{key(snap, 'New Shell')}</kbd>
                   </button>
                 </div>
@@ -583,16 +683,18 @@ export default function App() {
       {(modal?.kind === 'new' || modal?.kind === 'checkout') && (
         <WorktreeForm
           kind={modal.kind}
+          repos={repos}
+          repo={modal.repo}
           busy={!!busy}
           run={run}
           onCancel={() => {
             setModal(null)
             leaveList()
           }}
-          onDone={(name) => {
+          onDone={(dir) => {
             setModal(null)
-            say(`created ${name}`)
-            openWs(name)
+            say(`created ${dir.split('/').pop()}`)
+            openWs(dir)
           }}
         />
       )}
@@ -649,13 +751,16 @@ function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
 
 function WorktreeForm(props: {
   kind: 'new' | 'checkout'
+  repos: main.RepoInfo[]
+  repo: string // repo path to create in, preselected
   busy: boolean
   run: <T>(label: string, fn: () => Promise<T>, onErr?: (e: string) => void) => Promise<T | undefined>
-  onDone: (name: string) => void
+  onDone: (dir: string) => void
   onCancel: () => void
 }) {
-  const { kind, busy, run, onDone, onCancel } = props
+  const { kind, repos, busy, run, onDone, onCancel } = props
   const formRef = useRef<HTMLFormElement>(null)
+  const [repo, setRepo] = useState(props.repo)
   const [intention, setIntention] = useState('')
   const [branch, setBranch] = useState('')
   const [base, setBase] = useState('')
@@ -663,17 +768,17 @@ function WorktreeForm(props: {
   const [err, setErr] = useState('')
 
   useEffect(() => {
-    api.Branches().then((b) => setBranches(b ?? []))
-    if (kind === 'new') api.DefaultBase().then(setBase)
-  }, [kind])
+    api.Branches(repo).then((b) => setBranches(b ?? []))
+    if (kind === 'new') api.DefaultBase(repo).then(setBase)
+  }, [kind, repo])
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (busy) return
     setErr('')
     const label = kind === 'new' ? `creating ${intention.trim()}` : `checking out ${branch.trim()}`
-    const name = await run(label, () => (kind === 'new' ? api.Create(intention, branch, base) : api.Checkout(branch, intention)), setErr)
-    if (name) onDone(name)
+    const dir = await run(label, () => (kind === 'new' ? api.Create(repo, intention, branch, base) : api.Checkout(repo, branch, intention)), setErr)
+    if (dir) onDone(dir)
     else requestAnimationFrame(() => formRef.current?.querySelector('input')?.focus()) // fix and retry
   }
 
@@ -710,6 +815,18 @@ function WorktreeForm(props: {
         <h2>{kind === 'new' ? 'New worktree' : 'New worktree from branch'}</h2>
         {/* Disabled while the git operation runs, so it can't be re-triggered or cancelled mid-flight. */}
         <fieldset disabled={busy}>
+          {repos.length > 1 && (
+            <label>
+              <span>Repository</span>
+              <select value={repo} onChange={(e) => setRepo(e.target.value)}>
+                {repos.map((r) => (
+                  <option key={r.path} value={r.path}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {kind === 'new' ? [nameField, branchField] : [branchField, nameField]}
           {kind === 'new' && (
             <label>

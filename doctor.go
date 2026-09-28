@@ -27,7 +27,8 @@ func doctor() int {
 	}
 
 	// config (repo-local .grove.toml wins, else global)
-	cfgPath, isLocal := resolveConfigPath()
+	wd, _ := os.Getwd()
+	cfgPath, isLocal := resolveConfigPath(wd)
 	scope := "global"
 	if isLocal {
 		scope = "local"

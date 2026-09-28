@@ -52,8 +52,7 @@ func TestFindLocalConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Chdir(child)
-	got := findLocalConfig()
+	got := findLocalConfig(child)
 	// macOS /var -> /private/var symlink: compare resolved paths.
 	gotR, _ := filepath.EvalSymlinks(got)
 	wantR, _ := filepath.EvalSymlinks(cfg)
@@ -72,8 +71,7 @@ func TestFindLocalConfigStopsAtRepoRoot(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Chdir(repo)
-	if got := findLocalConfig(); got != "" {
+	if got := findLocalConfig(repo); got != "" {
 		t.Errorf("findLocalConfig() = %q, want empty (must not climb past repo root)", got)
 	}
 }

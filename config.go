@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -19,6 +20,7 @@ type Workspace struct {
 	Branch   string   `toml:"-"`     // display-only, set for discovered worktrees
 	RepoPath string   `toml:"-"`     // owning repo path, set for discovered worktrees; "" for manual entries
 	RepoName string   `toml:"-"`     // display repo name (prefix, else repo dir basename); drives the terminal title
+	Config   string   `toml:"-"`     // path of the config file it came from, which a window adds and removes whole
 }
 
 // Repo discovers one workspace per git worktree of the repo at Path.
@@ -29,6 +31,7 @@ type Repo struct {
 	WorktreeRoot string   `toml:"worktree_root"` // base dir for newly created worktrees
 	Base         string   `toml:"base"`          // start-point for new branches, default "origin/develop"
 	Setup        string   `toml:"setup"`         // command run in the shell pane after creating a worktree
+	Config       string   `toml:"-"`             // path of the config file it came from
 }
 
 // Config is the whole workspaces.toml file.
@@ -72,13 +75,9 @@ func gitRoot(dir string) string {
 	}
 }
 
-// findLocalConfig walks up from the current directory looking for .grove.toml,
-// not searching above the repository root. Returns "" if none is found.
-func findLocalConfig() string {
-	dir, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
+// findLocalConfig walks up from dir looking for .grove.toml, not searching above
+// the repository root. Returns "" if none is found.
+func findLocalConfig(dir string) string {
 	for {
 		if p := filepath.Join(dir, localConfigName); fileExists(p) {
 			return p
@@ -98,11 +97,11 @@ func findLocalConfig() string {
 // or "". This lets linked worktrees (which each have their own .git file and no
 // committed config) share the config that lives in the main worktree, so `grove`
 // run from any worktree (or from a pane) finds the same config and window.
-func mainWorktreeConfig() string {
-	out, err := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+func mainWorktreeConfig(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
 	if err != nil {
 		// Older git without --path-format: fall back and resolve manually.
-		out, err = exec.Command("git", "rev-parse", "--git-common-dir").Output()
+		out, err = exec.Command("git", "-C", dir, "rev-parse", "--git-common-dir").Output()
 		if err != nil {
 			return ""
 		}
@@ -112,9 +111,7 @@ func mainWorktreeConfig() string {
 		return ""
 	}
 	if !filepath.IsAbs(commonDir) {
-		if cwd, e := os.Getwd(); e == nil {
-			commonDir = filepath.Join(cwd, commonDir)
-		}
+		commonDir = filepath.Join(dir, commonDir)
 	}
 	// commonDir is the shared ".../<mainRoot>/.git"; its parent is the main root.
 	p := filepath.Join(filepath.Dir(commonDir), localConfigName)
@@ -124,13 +121,13 @@ func mainWorktreeConfig() string {
 	return ""
 }
 
-// resolveConfigPath returns the config to load: a repo-local .grove.toml when one
+// resolveConfigPath returns the config for dir: a repo-local .grove.toml when one
 // is found (local wins), then the main worktree's config, otherwise global.
-func resolveConfigPath() (path string, isLocal bool) {
-	if p := findLocalConfig(); p != "" {
+func resolveConfigPath(dir string) (path string, isLocal bool) {
+	if p := findLocalConfig(dir); p != "" {
 		return p, true
 	}
-	if p := mainWorktreeConfig(); p != "" {
+	if p := mainWorktreeConfig(dir); p != "" {
 		return p, true
 	}
 	return configPath(), false
@@ -145,32 +142,41 @@ func expandPath(p string) string {
 	return p
 }
 
-// loadConfig reads the resolved config (repo-local .grove.toml wins, else global).
-// It does not create anything: a missing config is an error pointing at
-// `grove init`.
+// loadConfig reads the config resolved from the current directory (repo-local
+// .grove.toml wins, else global). It does not create anything: a missing config
+// is an error pointing at `grove init`.
 func loadConfig() (*Config, error) {
-	path, _ := resolveConfigPath()
+	wd, _ := os.Getwd()
+	path, _ := resolveConfigPath(wd)
 	if !fileExists(path) {
 		return nil, fmt.Errorf("no grove config found\n  looked for %s up to the repo root, and %s\n  run `grove init` to create one in this repo",
 			localConfigName, path)
 	}
+	return readConfig(path)
+}
 
+// readConfig parses the config file at path.
+func readConfig(path string) (*Config, error) {
 	var cfg Config
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	cfg.Path = path
 
-	// A repo with no explicit path defaults to the config's own directory, so a
-	// repo-local .grove.toml needs no path.
+	// A repo's path is relative to the config's own directory, not the process
+	// cwd, and defaults to it, so a repo-local .grove.toml needs no path.
 	cfgDir := filepath.Dir(path)
 	for i := range cfg.Repo {
-		if strings.TrimSpace(cfg.Repo[i].Path) == "" {
-			cfg.Repo[i].Path = cfgDir
+		if p := expandPath(strings.TrimSpace(cfg.Repo[i].Path)); filepath.IsAbs(p) {
+			cfg.Repo[i].Path = p
+		} else {
+			cfg.Repo[i].Path = filepath.Join(cfgDir, p)
 		}
+		cfg.Repo[i].Config = path
 	}
 	for i := range cfg.Workspace {
 		cfg.Workspace[i].Dir = expandPath(cfg.Workspace[i].Dir)
+		cfg.Workspace[i].Config = path
 	}
 	if len(cfg.Workspace) == 0 && len(cfg.Repo) == 0 {
 		return nil, fmt.Errorf("no [[workspace]] or [[repo]] defined in %s", path)
@@ -196,6 +202,9 @@ func (c *Config) socketPath() string {
 	// Only the hash goes in the name: unix socket paths are capped at ~104 bytes.
 	return filepath.Join(socketDir(), fmt.Sprintf("grove-%x.sock", sum[:4]))
 }
+
+// reposFile lists the other repos this config's window also shows (App.addRepo).
+func (c *Config) reposFile() string { return strings.TrimSuffix(c.socketPath(), ".sock") + ".repos" }
 
 // socketDir holds the per-repo GUI sockets. The user cache dir is stable across
 // launch contexts (terminal, Finder), unlike TMPDIR.
@@ -227,10 +236,13 @@ func initConfig() error {
 	return nil
 }
 
-// resolve expands [[repo]] worktrees and merges with manual [[workspace]]
-// entries. Repo discovery failures are reported as warnings, not fatal.
+// resolve expands [[repo]] worktrees, repo by repo, then adds the manual
+// [[workspace]] entries: the order the sidebar groups them in. A manual entry
+// whose dir is already listed (a repo's worktree, or the same entry in another
+// config shown in the window) is dropped, since dirs key workspaces. Repo
+// discovery failures are reported as warnings, not fatal.
 func (c *Config) resolve() []Workspace {
-	out := append([]Workspace(nil), c.Workspace...)
+	var out []Workspace
 	for _, r := range c.Repo {
 		wss, err := expandRepo(r)
 		if err != nil {
@@ -238,6 +250,11 @@ func (c *Config) resolve() []Workspace {
 			continue
 		}
 		out = append(out, wss...)
+	}
+	for _, w := range c.Workspace {
+		if !slices.ContainsFunc(out, func(o Workspace) bool { return o.Dir == w.Dir }) {
+			out = append(out, w)
+		}
 	}
 	return out
 }
