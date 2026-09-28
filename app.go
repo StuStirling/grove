@@ -46,9 +46,11 @@ type App struct {
 	mu        sync.Mutex
 	cfg       *Config     // own plus the added repos (see merged); replaced, never mutated
 	added     []addedRepo // other repos shown in this window
+	skipped   []string    // saved repos restoreRepos couldn't add, kept in the saved list
 	ws        []Workspace
-	initial   string   // workspace to select on first load
-	menuNames []string // workspace names in the Go menu, to rebuild it on change
+	initial   string   // workspace (name or dir) to select on first load
+	setup     bool     // queue initial's setup command: `grove new` made it
+	menuNames []string // Go menu labels, to rebuild it on change
 }
 
 // addedRepo is another repo's config shown in this window. The window serves
@@ -60,9 +62,10 @@ type addedRepo struct {
 
 // RepoInfo is a repo new worktrees can be created in.
 type RepoInfo struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	Added bool   `json:"added"` // added to the window (removable), not its own
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Added  bool   `json:"added"`  // added to the window (removable), not its own
+	Config string `json:"config"` // its config file: removing the repo takes out all it lists
 }
 
 // WorkspaceInfo is one sidebar entry.
@@ -72,6 +75,7 @@ type WorkspaceInfo struct {
 	Dir      string `json:"dir"`
 	Repo     string `json:"repo"`     // display repo name, for the window title
 	RepoPath string `json:"repoPath"` // "" for a manual [[workspace]] (not deletable)
+	Config   string `json:"config"`   // the config file it came from
 	Open     bool   `json:"open"`
 	Claude   string `json:"claude"` // "working" | "waiting" | "idle" | ""
 	Panes    []Pane `json:"panes"`
@@ -91,7 +95,7 @@ type Snapshot struct {
 }
 
 func newApp(initial string, setup bool) *App {
-	a := &App{ready: make(chan struct{}), initial: initial}
+	a := &App{ready: make(chan struct{}), initial: initial, setup: setup}
 	cfg, err := loadConfig()
 	if err != nil {
 		a.cfgErr = err.Error()
@@ -100,13 +104,6 @@ func newApp(initial string, setup bool) *App {
 	a.own, a.cfg = cfg, cfg
 	a.sess = newSessions(cfg.socketPath(), a.emit)
 	a.ws = cfg.resolve()
-	if ws, ok := a.find(initial); ok && initial != "" {
-		a.initial = ws.Dir // the frontend selects by dir
-		if setup {
-			// `grove new` launched us for a fresh worktree: queue its setup command.
-			a.sess.ensure(ws, a.repoFor(ws).Setup)
-		}
-	}
 	return a
 }
 
@@ -140,8 +137,19 @@ func (a *App) addRepo(dir string) (string, error) {
 		return "", err
 	}
 	name, sock := filepath.Base(filepath.Dir(path)), cfg.socketPath()
+	if len(cfg.Repo) == 0 {
+		// Only a repo's header offers to take it out of the window again.
+		return "", fmt.Errorf("no [[repo]] in %s: only a repo can be added to a window", path)
+	}
+	// A repo already listed another way (a linked worktree's own .grove.toml, a
+	// config naming the same repo) would list its worktrees twice. Its manual
+	// entries already listed are only dropped (resolve).
+	wss := (&Config{Repo: cfg.Repo}).resolve()
 	a.mu.Lock()
 	dup := sock == a.own.socketPath() || slices.ContainsFunc(a.added, func(r addedRepo) bool { return r.cfg.socketPath() == sock })
+	for _, w := range wss {
+		dup = dup || slices.ContainsFunc(a.ws, func(v Workspace) bool { return v.Dir == w.Dir })
+	}
 	a.mu.Unlock()
 	if dup {
 		return "", fmt.Errorf("%s is already in this window", name)
@@ -152,19 +160,22 @@ func (a *App) addRepo(dir string) (string, error) {
 	}
 	a.mu.Lock()
 	a.added = append(a.added, addedRepo{cfg, ln})
+	a.skipped = slices.DeleteFunc(a.skipped, func(d string) bool { return d == filepath.Dir(path) }) // saved once, as added
 	a.cfg = a.merged()
 	a.mu.Unlock()
 	a.reload()
 	return name, nil
 }
 
-// saveRepos remembers the added repos, so the window shows them next launch.
+// saveRepos remembers the added repos, so the window shows them next launch,
+// and the ones restoreRepos skipped, so they are tried again then.
 func (a *App) saveRepos() {
 	a.mu.Lock()
 	var dirs []string
 	for _, r := range a.added {
 		dirs = append(dirs, filepath.Dir(r.cfg.Path))
 	}
+	dirs = append(dirs, a.skipped...)
 	a.mu.Unlock()
 	if err := os.WriteFile(a.own.reposFile(), []byte(strings.Join(dirs, "\n")), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "grove: saving repos: %v\n", err)
@@ -172,7 +183,7 @@ func (a *App) saveRepos() {
 }
 
 // restoreRepos re-adds the repos saved last time. One that is gone, or open in
-// another window, is skipped, and the saved list is kept as it was.
+// another window, is skipped but stays saved (saveRepos), to be tried next launch.
 func (a *App) restoreRepos() {
 	data, _ := os.ReadFile(a.own.reposFile())
 	for _, dir := range strings.Split(string(data), "\n") {
@@ -181,6 +192,9 @@ func (a *App) restoreRepos() {
 		}
 		if _, err := a.addRepo(dir); err != nil {
 			fmt.Fprintf(os.Stderr, "grove: not restoring %s: %v\n", dir, err)
+			a.mu.Lock()
+			a.skipped = append(a.skipped, dir)
+			a.mu.Unlock()
 		}
 	}
 }
@@ -329,7 +343,7 @@ func (a *App) State() Snapshot {
 	infos := make([]WorkspaceInfo, len(a.ws))
 	for i, ws := range a.ws {
 		infos[i] = WorkspaceInfo{
-			Name: ws.Name, Branch: ws.Branch, Dir: ws.Dir, Repo: ws.RepoName, RepoPath: ws.RepoPath,
+			Name: ws.Name, Branch: ws.Branch, Dir: ws.Dir, Repo: ws.RepoName, RepoPath: ws.RepoPath, Config: ws.Config,
 			Claude: claude[ws.Dir], Panes: open[ws.Dir],
 		}
 		_, infos[i].Open = open[ws.Dir]
@@ -338,7 +352,7 @@ func (a *App) State() Snapshot {
 	repos := make([]RepoInfo, len(cfg.Repo))
 	for i, r := range cfg.Repo {
 		// merged puts the window's own repos first.
-		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(a.own.Repo)}
+		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(a.own.Repo), Config: r.Config}
 	}
 	return Snapshot{
 		Error:      a.cfgErr,
@@ -359,13 +373,23 @@ func (a *App) Reload() Snapshot {
 	return a.State()
 }
 
-// TakeInitial returns the workspace to select at startup, once.
+// TakeInitial returns the dir of the workspace to select at startup, once. It
+// is looked up here rather than in newApp, so that a worktree of an added repo,
+// restored after newApp, is found too.
 func (a *App) TakeInitial() string {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	n := a.initial
-	a.initial = ""
-	return n
+	n, setup := a.initial, a.setup
+	a.initial, a.setup = "", false
+	a.mu.Unlock()
+	ws, ok := a.find(n)
+	if n == "" || !ok {
+		return ""
+	}
+	if setup {
+		// `grove new` launched us for a fresh worktree: queue its setup command.
+		a.sess.ensure(ws, a.repoFor(ws).Setup)
+	}
+	return ws.Dir // the frontend selects by dir
 }
 
 // Open ensures the workspace at dir has its panes and returns them.
@@ -570,7 +594,8 @@ func (a *App) AddRepo() (string, error) {
 }
 
 // RemoveRepo takes the added repo with a [[repo]] at path out of the window,
-// stopping its open worktrees. Nothing is removed from disk.
+// with everything else its config lists, stopping their open worktrees.
+// Nothing is removed from disk.
 func (a *App) RemoveRepo(path string) error {
 	a.mu.Lock()
 	i := slices.IndexFunc(a.added, func(r addedRepo) bool {
@@ -581,13 +606,20 @@ func (a *App) RemoveRepo(path string) error {
 		return errors.New("only a repository added to this window can be removed")
 	}
 	r := a.added[i]
+	// The worktrees as listed, not rediscovered: the repo's folder may have moved.
+	var dirs []string
+	for _, ws := range a.ws {
+		if ws.Config == r.cfg.Path {
+			dirs = append(dirs, ws.Dir)
+		}
+	}
 	a.added = slices.Delete(a.added, i, i+1)
 	a.cfg = a.merged()
 	a.mu.Unlock()
 	_ = r.ln.Close()
-	for _, ws := range r.cfg.resolve() {
-		if a.sess.isOpen(ws.Dir) {
-			_ = a.sess.close(ws.Dir)
+	for _, dir := range dirs {
+		if a.sess.isOpen(dir) {
+			_ = a.sess.close(dir)
 		}
 	}
 	a.saveRepos()
@@ -794,16 +826,28 @@ func (a *App) buildMenu(names []string) *menu.Menu {
 	return m
 }
 
-// setMenu installs the menu, rebuilding it only when the workspace names change.
+// menuLabels are the Go menu's worktree items: their names, prefixed with
+// their repo's when the window shows several repos, whose worktrees can share
+// names. Callers hold mu.
+func (a *App) menuLabels() []string {
+	names := make([]string, len(a.ws))
+	for i, ws := range a.ws {
+		names[i] = ws.Name
+		// A prefixed repo's names start with its name already.
+		if len(a.cfg.Repo) > 1 && ws.RepoName != "" && !strings.HasPrefix(ws.Name, ws.RepoName+"/") {
+			names[i] = ws.RepoName + "/" + ws.Name
+		}
+	}
+	return names
+}
+
+// setMenu installs the menu, rebuilding it only when its worktree labels change.
 func (a *App) setMenu() {
 	if a.ctx == nil {
 		return // before startup, which installs it (restoreRepos reloads that early)
 	}
 	a.mu.Lock()
-	names := make([]string, len(a.ws))
-	for i, ws := range a.ws {
-		names[i] = ws.Name
-	}
+	names := a.menuLabels()
 	same := slices.Equal(names, a.menuNames)
 	a.menuNames = names
 	a.mu.Unlock()

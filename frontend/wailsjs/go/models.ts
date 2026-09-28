@@ -58,6 +58,7 @@ export namespace main {
 	    name: string;
 	    path: string;
 	    added: boolean;
+	    config: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new RepoInfo(source);
@@ -68,6 +69,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.path = source["path"];
 	        this.added = source["added"];
+	        this.config = source["config"];
 	    }
 	}
 	export class ShortcutInfo {
@@ -92,6 +94,7 @@ export namespace main {
 	    dir: string;
 	    repo: string;
 	    repoPath: string;
+	    config: string;
 	    open: boolean;
 	    claude: string;
 	    panes: Pane[];
@@ -107,6 +110,7 @@ export namespace main {
 	        this.dir = source["dir"];
 	        this.repo = source["repo"];
 	        this.repoPath = source["repoPath"];
+	        this.config = source["config"];
 	        this.open = source["open"];
 	        this.claude = source["claude"];
 	        this.panes = this.convertValues(source["panes"], Pane);

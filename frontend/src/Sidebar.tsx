@@ -119,7 +119,7 @@ export function Sidebar(props: {
         {props.groups.map((g) => {
           const path = g.repo?.path ?? ''
           if (g.repo && path === props.confirm) {
-            const text = removeText(g.repo.name, all.filter((w) => w.repoPath === path))
+            const text = removeText(g.repo, all)
             return <RepoConfirm key={'repo:' + path} {...text} onAnswer={props.onConfirm} />
           }
           const hidden = g.repo && props.collapsed.includes(path) && !g.rows.length ? all.filter((w) => w.repoPath === path).length : 0

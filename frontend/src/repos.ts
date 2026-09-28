@@ -24,8 +24,10 @@ const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : 
 
 // removeText is the inline confirm for taking a repo out of the window: what
 // stays on disk, then what closes, from its worktrees' open tabs (left out when
-// nothing is open).
-export function removeText(name: string, worktrees: main.WorkspaceInfo[]) {
+// nothing is open). Everything from the repo's config goes with it (its other
+// [[repo]]s and [[workspace]]s), so all of that counts.
+export function removeText(repo: main.RepoInfo, all: main.WorkspaceInfo[]) {
+  const worktrees = all.filter((w) => w.config === repo.config)
   const tabs = worktrees.flatMap((w) => w.panes ?? [])
   const claude = tabs.filter((t) => t.kind === 'claude').length
   const closing = [
@@ -35,7 +37,7 @@ export function removeText(name: string, worktrees: main.WorkspaceInfo[]) {
   const n = worktrees.length
   const kept = `Its ${count(n, 'worktree and branch', 'worktrees and branches')} stay on disk.`
   return {
-    title: `Remove ${name} from this window?`,
+    title: `Remove ${repo.name} from this window?`,
     detail: closing.length ? `${kept} ${closing.join(' and ')} will close.` : kept,
   }
 }

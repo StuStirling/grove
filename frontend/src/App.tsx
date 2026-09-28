@@ -69,7 +69,9 @@ export default function App() {
   // Rows being removed stay in the list, where they were, until they're done.
   const listed = rm.withRemovals(all, removals)
   const grouped = groups(listed, repos, collapsed, q)
-  const filtered = grouped.flatMap((g) => g.rows) // the rows shown: the list cursor never lands on a hidden one
+  // The rows shown: the list cursor never lands on a hidden one, nor on one
+  // whose group the remove confirm stands in for.
+  const filtered = grouped.flatMap((g) => (g.repo && g.repo.path === repoConfirm?.path ? [] : g.rows))
   const sel = all.find((w) => w.dir === selected)
   const selTab = focusedTab(sel?.open ? layouts[sel.dir] : undefined)
   const font = {
@@ -289,9 +291,13 @@ export default function App() {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next))
   }
 
-  // A worktree of the repo that is mid-removal holds up taking the repo out of
-  // the window, so the removal's outcome still has a row to show in.
-  const removingIn = (path: string) => listed.find((w) => w.repoPath === path && rm.inFlight(removals[w.dir]))
+  // A worktree going with the repo (from its config) that is mid-removal holds up
+  // taking the repo out of the window, so the removal's outcome still has a row
+  // to show in.
+  const removingIn = (path: string) => {
+    const config = repos.find((r) => r.path === path)?.config
+    return listed.find((w) => w.config === config && rm.inFlight(removals[w.dir]))
+  }
 
   // askRemoveRepo swaps an added repo's sidebar group for an inline confirm.
   function askRemoveRepo(path: string) {
@@ -411,6 +417,7 @@ export default function App() {
       // ⌘1-9 number the list's rows, so one hidden in a collapsed group has no
       // number shown and doesn't open.
       const w = all[Number(action.slice(3))]
+      if (w && w.repoPath === repoConfirm?.path) return say(`cancel removing ${w.repo} to open ${w.name}`)
       if (w && collapsed.includes(w.repoPath) && !filtered.some((f) => f.dir === w.dir)) return say(`expand ${w.repo} to open ${w.name}`)
       if (w) openWs(w.dir)
     }
@@ -515,7 +522,7 @@ export default function App() {
   useLayoutEffect(() => {
     const i = filtered.findIndex((w) => w.dir === cursorRow.current)
     if (i >= 0) setCursor(i)
-  }, [listed.map((w) => w.dir).join('\n'), collapsed.join('\n')])
+  }, [listed.map((w) => w.dir).join('\n'), collapsed.join('\n'), repoConfirm?.path])
   useEffect(() => setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1))), [filtered.length])
 
   // Run removal rows' timers: "Removed." collapsing away, a kept branch's wait.

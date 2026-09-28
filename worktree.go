@@ -114,7 +114,7 @@ func workspaceFor(r Repo, path, branch string) Workspace {
 	if r.Prefix != "" {
 		name = r.Prefix + "/" + name
 	}
-	return Workspace{Name: name, Dir: path, Panes: r.Panes, Branch: branch, RepoPath: expandPath(r.Path), RepoName: repoName(r)}
+	return Workspace{Name: name, Dir: path, Panes: r.Panes, Branch: branch, RepoPath: expandPath(r.Path), RepoName: repoName(r), Config: r.Config}
 }
 
 // repoName is a repo's display name: its prefix, else its dir's basename.
@@ -207,7 +207,17 @@ func createWorktree(r Repo, intention, branch, base string) (Workspace, error) {
 			return Workspace{}, err
 		}
 	}
-	return workspaceFor(r, path, branch), nil
+	return workspaceFor(r, realPath(path), branch), nil
+}
+
+// realPath resolves symlinks in a new worktree's path, as `git worktree list`
+// does, so its dir matches the workspace the window lists (under a symlinked
+// worktree_root, or macOS's /tmp).
+func realPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+	return path
 }
 
 // upstreamRemote picks the remote the new branch should track: the remote
@@ -290,7 +300,7 @@ func checkoutWorktree(r Repo, branch, intention string) (Workspace, error) {
 	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 		return Workspace{}, fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return workspaceFor(r, path, local), nil
+	return workspaceFor(r, realPath(path), local), nil
 }
 
 // gitError is a git command that failed. It keeps git's own words apart from
