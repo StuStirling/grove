@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import * as api from '../wailsjs/go/main/App'
-import { EventsOn, WindowSetTitle } from '../wailsjs/runtime/runtime'
+import { EventsOn, Quit, WindowSetTitle } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
 import { WorkspaceHeader, WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
@@ -12,7 +12,7 @@ import { errText, key } from './util'
 // Worktrees are keyed by dir everywhere: two repos in one window can share
 // worktree names.
 type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; resolve: (yes: boolean) => void }
-type Modal = { kind: 'new' | 'checkout'; repo: string } | { kind: 'help' } | Confirm
+type Modal = { kind: 'new' | 'checkout'; repo: string } | { kind: 'settings'; config: string } | { kind: 'init'; init: main.RepoInit } | { kind: 'help' } | Confirm
 
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
@@ -100,8 +100,13 @@ export default function App() {
   }
   const refresh = () => fetchSnap(api.State)
   const reload = async (manual: boolean) => {
-    await fetchSnap(api.Reload)
-    if (manual) say('refreshed')
+    // ⌘R re-reads the config too, so hand edits apply without a restart.
+    try {
+      await fetchSnap(manual ? api.ReloadConfig : api.Reload)
+      if (manual) say('refreshed')
+    } catch (e) {
+      say(errText(e), true)
+    }
   }
   const setLayout = (dir: string, f: (l: Layout) => Layout) => setLayouts((ls) => (ls[dir] ? { ...ls, [dir]: f(ls[dir]) } : ls))
   // focusNow puts keyboard focus on the selected worktree's focused tab once
@@ -280,10 +285,16 @@ export default function App() {
   }
 
   const openRepo = () => api.OpenRepo().catch((e) => say(errText(e), true))
-  const addRepo = () => api.AddRepo().then((name) => name && say(`added ${name}`), (e) => say(errText(e), true))
+  // A repo with no config yet gets the setup prompt first, which adds it.
+  const addRepo = () =>
+    api.AddRepo().then(
+      (r) => (r.init ? setModal({ kind: 'init', init: r.init }) : r.name && say(`added ${r.name}`)),
+      (e) => say(errText(e), true),
+    )
 
   // The repo header menu's actions.
   const newIn = (path: string) => !busy && setModal({ kind: 'new', repo: path })
+  const settingsFor = (config: string) => !busy && setModal({ kind: 'settings', config })
   const reveal = (path: string) => api.Reveal(path).catch((e) => say(errText(e), true))
   function toggleRepo(path: string) {
     const next = collapsed.includes(path) ? collapsed.filter((p) => p !== path) : [...collapsed, path]
@@ -382,6 +393,8 @@ export default function App() {
         return need(deleteWs)
       case 'reload':
         return reload(true)
+      case 'settings':
+        return settingsFor(ws?.config || snap?.config || '')
       case 'goto':
         return focusList()
       case 'next-ws':
@@ -439,12 +452,14 @@ export default function App() {
       if (!live.current.busy && !live.current.modal) live.current.reload(false)
     }
     window.addEventListener('focus', onFocus)
-    // ⌘⌫ is also an editing key (delete to line start; a DEL byte in xterm), so
-    // inputs and panes consume it before the menu sees it. Claim it first. Mac
-    // only: GTK runs menu accelerators before the page, so Linux needs no help.
+    // ⌘⌫ is also an editing key (delete to line start), so inputs consume it
+    // before the menu sees it. Claim it first, except in a pane, where it deletes
+    // the line as in other Mac terminals (TermPane). Mac only: GTK runs menu
+    // accelerators before the page, so Linux needs no help.
     const onKey = (e: KeyboardEvent) => {
       const del = e.key === 'Backspace' && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
-      if (del && navigator.userAgent.includes('Mac') && !live.current.modal) {
+      const inPane = (e.target as Element | null)?.closest?.('.xterm')
+      if (del && navigator.userAgent.includes('Mac') && !live.current.modal && !inPane) {
         e.preventDefault()
         e.stopPropagation()
         live.current.dispatch('delete')
@@ -552,6 +567,19 @@ export default function App() {
     )
   }
 
+  // The window was opened for a repo with no config: set it up, then show it.
+  // Cancelling closes the window.
+  if (snap?.init) {
+    return (
+      <InitForm
+        init={snap.init}
+        snap={snap}
+        onCancel={Quit}
+        onDone={() => fetchSnap(api.State).then(() => requestAnimationFrame(() => filterRef.current?.focus()))}
+      />
+    )
+  }
+
   const onFilterKey = (e: React.KeyboardEvent) => {
     const down = e.key === 'ArrowDown' || (e.ctrlKey && (e.key === 'n' || e.key === 'j'))
     const up = e.key === 'ArrowUp' || (e.ctrlKey && (e.key === 'p' || e.key === 'k'))
@@ -602,6 +630,7 @@ export default function App() {
         onNewIn={newIn}
         onToggle={toggleRepo}
         onReveal={reveal}
+        onSettings={settingsFor}
         onAskRemove={askRemoveRepo}
         confirm={repoConfirm?.path ?? null}
         onConfirm={answerRemoveRepo}
@@ -695,6 +724,28 @@ export default function App() {
             setModal(null)
             say(`created ${dir.split('/').pop()}`)
             openWs(dir)
+          }}
+        />
+      )}
+      {modal?.kind === 'settings' && snap && (
+        <SettingsForm
+          snap={snap}
+          config={modal.config}
+          onCancel={() => setModal(null)}
+          onDone={() => {
+            setModal(null)
+            say('settings saved')
+          }}
+        />
+      )}
+      {modal?.kind === 'init' && (
+        <InitForm
+          init={modal.init}
+          snap={snap}
+          onCancel={() => setModal(null)}
+          onDone={() => {
+            setModal(null)
+            say(`added ${modal.init.name}`)
           }}
         />
       )}
@@ -854,6 +905,258 @@ function WorktreeForm(props: {
   )
 }
 
+// InitForm sets up grove for a repo with no config: it asks for what New
+// Worktree needs, prefilled with the defaults, and writes the repo's .grove.toml.
+function InitForm(props: { init: main.RepoInit; snap: main.Snapshot | null; onDone: () => void; onCancel: () => void }) {
+  const { init, snap, onDone, onCancel } = props
+  const [root, setRoot] = useState(init.worktreeRoot)
+  const [base, setBase] = useState(init.base)
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (saving) return
+    setSaving(true)
+    setErr('')
+    try {
+      await api.InitRepo(init.config, root, base)
+      onDone()
+    } catch (e) {
+      setErr(errText(e))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="overlay">
+      <form
+        className="dialog form"
+        role="dialog"
+        tabIndex={-1}
+        onBlur={keepFocus}
+        onSubmit={submit}
+        onKeyDown={(e) => e.key === 'Escape' && !saving && (e.preventDefault(), onCancel())}
+      >
+        <h2>Set up grove for {init.name}</h2>
+        <p>
+          {init.name} has no grove config yet. This creates <code>{init.config}</code>; change it any time in Settings ({key(snap, 'Settings')}).
+        </p>
+        <fieldset disabled={saving}>
+          <label>
+            <span>
+              Worktree folder <small>where new worktrees go</small>
+            </span>
+            <input autoFocus value={root} onChange={(e) => setRoot(e.target.value)} spellCheck={false} />
+          </label>
+          <label>
+            <span>
+              Base branch <small>new branches start from it</small>
+            </span>
+            <input value={base} onChange={(e) => setBase(e.target.value)} list="grove-init-branches" spellCheck={false} />
+          </label>
+          <datalist id="grove-init-branches">
+            {(init.branches ?? []).map((b) => (
+              <option key={b} value={b} />
+            ))}
+          </datalist>
+          {err && <p className="err">{err}</p>}
+          <div className="buttons">
+            <button type="button" onClick={onCancel}>
+              Cancel <kbd>esc</kbd>
+            </button>
+            <button type="submit" className="primary">
+              {saving ? 'Setting up…' : 'Set up'} <kbd>↩</kbd>
+            </button>
+          </div>
+        </fieldset>
+      </form>
+    </div>
+  )
+}
+
+// Presets for `terminal`, as in the README.
+const TERMINALS = navigator.userAgent.includes('Mac')
+  ? ['open -na Ghostty --args --working-directory={dir}', 'open -na WezTerm --args start --cwd {dir}']
+  : ['ghostty -e {cmd}', 'wezterm start -- {cmd}', 'kitty {cmd}', 'alacritty -e {cmd}']
+
+// SettingsForm edits one of the window's config files: its window settings and
+// each [[repo]]'s. The rest of the file (a repo's path, [[workspace]]s) saves
+// back as it was, but not its comments. The window applies a save at once.
+function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () => void; onCancel: () => void }) {
+  const { snap, onDone, onCancel } = props
+  const [path, setPath] = useState(props.config)
+  const [cfg, setCfg] = useState<main.Config | null>(null)
+  const [version, setVersion] = useState('')
+  const [branches, setBranches] = useState<string[][]>([])
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState('')
+
+  const repos = snap.repos ?? []
+  const configs = [...new Set([snap.config, ...repos.map((r) => r.config)])]
+  const nameOf = (p: string) => repos.find((r) => r.config === p)?.name ?? p.split('/').slice(-2)[0]
+  const fileRepos = repos.filter((r) => r.config === path) // the file's [[repo]]s as listed, in order
+
+  useEffect(() => {
+    setCfg(null)
+    setErr('')
+    api.Settings(path).then(
+      (s) => {
+        setCfg(s.config)
+        setVersion(s.version)
+      },
+      (e) => setErr(errText(e)),
+    )
+    Promise.all(fileRepos.map((r) => api.Branches(r.path))).then((bs) => setBranches(bs.map((b) => b ?? [])))
+  }, [path])
+
+  const edit = (f: (c: main.Config) => void) =>
+    setCfg((c) => {
+      if (!c) return c
+      const next: main.Config = JSON.parse(JSON.stringify(c))
+      f(next)
+      return next
+    })
+  // set is an input's onChange, putting its value into the config with f.
+  const set = (f: (c: main.Config, v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    edit((c) => f(c, v))
+  }
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!cfg || saving) return
+    setSaving(true)
+    setErr('')
+    try {
+      await api.SaveSettings(path, cfg, version)
+      onDone()
+    } catch (e) {
+      setErr(errText(e))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="overlay">
+      <form
+        className="dialog form settings"
+        role="dialog"
+        tabIndex={-1}
+        onBlur={keepFocus}
+        onSubmit={submit}
+        onKeyDown={(e) => e.key === 'Escape' && !saving && (e.preventDefault(), onCancel())}
+      >
+        <h2>Settings</h2>
+        <fieldset disabled={saving}>
+          {configs.length > 1 && (
+            <label>
+              <span>Config file</span>
+              <select value={path} onChange={(e) => setPath(e.target.value)}>
+                {configs.map((p) => (
+                  <option key={p} value={p}>
+                    {nameOf(p)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <p className="path">{path}</p>
+          {cfg && (
+            <>
+              <h3>Window</h3>
+              {path !== snap.config && (
+                <p className="hint">
+                  Used when {nameOf(path)} has its own window. This window uses {nameOf(snap.config)}'s.
+                </p>
+              )}
+              <label>
+                <span>External terminal</span>
+                <input autoFocus value={cfg.terminal ?? ''} onChange={set((c, v) => (c.terminal = v))} list="grove-terminals" placeholder="none" spellCheck={false} />
+                <small>
+                  {'{dir}'} = the worktree's path, {'{cmd}'} = a shell started in it
+                </small>
+              </label>
+              <datalist id="grove-terminals">
+                {TERMINALS.map((t) => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
+              <div className="cols">
+                <label>
+                  <span>Font</span>
+                  <input value={cfg.fontFamily ?? ''} onChange={set((c, v) => (c.fontFamily = v))} placeholder="system monospace" spellCheck={false} />
+                </label>
+                <label className="narrow">
+                  <span>Size</span>
+                  <input type="number" min={6} max={72} value={cfg.fontSize || ''} onChange={set((c, v) => (c.fontSize = Math.round(Number(v)) || 0))} placeholder="13" />
+                </label>
+              </div>
+              {(cfg.repo ?? []).map((r, i) => (
+                <section key={i}>
+                  <h3>Repository{fileRepos[i] && ` · ${fileRepos[i].name}`}</h3>
+                  <div className="field">
+                    <span>
+                      Panes <small>first = left pane, the rest = tabs in a right pane</small>
+                    </span>
+                    {(r.panes ?? []).map((p, j) => (
+                      <div className="pane-row" key={j}>
+                        <input aria-label={`Pane ${j + 1}`} value={p} onChange={set((c, v) => (c.repo[i].panes[j] = v))} placeholder="your shell" spellCheck={false} />
+                        <button type="button" aria-label={`Remove pane ${j + 1}`} onClick={() => edit((c) => c.repo[i].panes.splice(j, 1))}>
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={() => edit((c) => (c.repo[i].panes = [...(c.repo[i].panes ?? []), '']))}>
+                      + Add pane
+                    </button>
+                  </div>
+                  <label>
+                    <span>
+                      Worktree folder <small>where new worktrees go</small>
+                    </span>
+                    <input value={r.worktreeRoot ?? ''} onChange={set((c, v) => (c.repo[i].worktreeRoot = v))} placeholder="<repo>-worktrees beside the repo" spellCheck={false} />
+                  </label>
+                  <div className="cols">
+                    <label>
+                      <span>Base branch</span>
+                      <input value={r.base ?? ''} onChange={set((c, v) => (c.repo[i].base = v))} placeholder="the remote's default branch" list={`grove-bases-${i}`} spellCheck={false} />
+                    </label>
+                    <label>
+                      <span>Name prefix</span>
+                      <input value={r.prefix ?? ''} onChange={set((c, v) => (c.repo[i].prefix = v))} placeholder="none" spellCheck={false} />
+                    </label>
+                  </div>
+                  <datalist id={`grove-bases-${i}`}>
+                    {(branches[i] ?? []).map((b) => (
+                      <option key={b} value={b} />
+                    ))}
+                  </datalist>
+                  <label>
+                    <span>
+                      Setup command <small>runs in the shell pane after creating a worktree</small>
+                    </span>
+                    <input value={r.setup ?? ''} onChange={set((c, v) => (c.repo[i].setup = v))} placeholder="e.g. ./scripts/bootstrap.sh" spellCheck={false} />
+                  </label>
+                </section>
+              ))}
+            </>
+          )}
+          {err && <p className="err">{err}</p>}
+          <div className="buttons">
+            <button type="button" onClick={onCancel}>
+              Cancel <kbd>esc</kbd>
+            </button>
+            <button type="submit" className="primary" disabled={!cfg}>
+              {saving ? 'Saving…' : 'Save'} <kbd>↩</kbd>
+            </button>
+          </div>
+        </fieldset>
+      </form>
+    </div>
+  )
+}
+
 function Help({ snap, close }: { snap: main.Snapshot | null; close: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => ref.current?.focus(), [])
@@ -862,6 +1165,7 @@ function Help({ snap, close }: { snap: main.Snapshot | null; close: () => void }
   const mac = navigator.userAgent.includes('Mac')
   groups.set('Everywhere else', [
     { group: '', label: 'Newline in a pane (Claude Code)', keys: mac ? '⇧↩' : 'Shift+Enter' },
+    { group: '', label: 'Delete to line start in a pane', keys: mac ? '⌘⌫' : 'Ctrl+U' },
     { group: '', label: 'Worktree list: move / open / back', keys: '↑↓ ↩ esc' },
     { group: '', label: 'Dialogs: next field / confirm / cancel', keys: '⇥ ↩ esc' },
     { group: '', label: 'Open a link in a pane', keys: mac ? '⌘-click' : 'Ctrl-click' },

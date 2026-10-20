@@ -55,10 +55,16 @@ function TermPane({ pane, font, dim, onFocus }: { pane: main.Pane; font: Font; d
     term.open(el)
 
     // Shift+Enter inserts a newline in Claude Code (and zsh) as ESC CR; xterm.js
-    // would otherwise send a bare CR and submit.
+    // would otherwise send a bare CR and submit. ⌘⌫ deletes to the line's start
+    // as ^U, as Mac terminals send it; xterm.js would send a lone DEL.
     term.attachCustomKeyEventHandler((e) => {
       if (e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
         if (e.type === 'keydown') Write(pane.id, '\x1b\r')
+        return false
+      }
+      if (e.key === 'Backspace' && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        if (e.type === 'keydown') Write(pane.id, '\x15')
+        e.preventDefault() // handled: not the menu's Delete Worktree too
         return false
       }
       return true

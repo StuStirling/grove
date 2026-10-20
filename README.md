@@ -61,10 +61,14 @@ Make sure `~/.local/bin` is on your PATH. Override the locations with
 
 ```sh
 cd your-repo
-grove init          # writes a .grove.toml template at the repo root
-$EDITOR .grove.toml # set worktree_root (needed to create worktrees) and panes
 grove               # opens this repo's grove window
 ```
+
+The first time, grove asks where new worktrees go (default: `<repo>-worktrees`
+beside the repo) and the base branch for new ones (default: the remote's default
+branch), and writes them to a `.grove.toml` at the repo root. Change them, the
+`panes` and the rest any time in **Settings… (⌘,)**, or edit `.grove.toml` by
+hand. `grove init` writes a commented template instead, if you prefer.
 
 For the Claude Code marks in the sidebar, add the hooks from
 [Claude Code status](#claude-code-status).
@@ -73,7 +77,7 @@ Run `grove` from any worktree of the repo and you get the same window: it is one
 window per repo. Different repos get their own windows and run side by side.
 
 To work across repos in one window, **Add Repository… (⌘O)** picks another repo
-(it needs its own `.grove.toml`) and lists its worktrees under their own heading
+(one with no `.grove.toml` is set up first, as above) and lists its worktrees under their own heading
 in the sidebar. Each repo keeps its own `panes`, `worktree_root`, `base` and
 `setup`; `terminal` and the font come from the window's own repo. New Worktree
 creates in the selected worktree's repo, with a picker to change it. The window
@@ -125,10 +129,13 @@ Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (pl
 | Reload worktrees | ⌘R | Newline in Claude Code | ⇧↩ |
 | Open in external terminal | ⌘⇧O | Open link | ⌘-click |
 | Add repository to this window | ⌘O | Select over a mouse-aware app | ⌥-drag |
-| | | Keyboard shortcuts | ⌘/ |
+| Settings… | ⌘, | Keyboard shortcuts | ⌘/ |
+| | | Delete to line start | ⌘⌫ |
 
 While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧O act on the highlighted
-worktree; otherwise they act on the one you're in. Dialogs take **Y / N**, ↩ and
+worktree; otherwise they act on the one you're in. In a pane, ⌘⌫ deletes to the
+start of the line as in other Mac terminals, so delete the worktree you're in
+with ⌘P then ⌘⌫ (or File ▸ Delete Worktree…). Dialogs take **Y / N**, ↩ and
 Esc; deleting needs an explicit **Y**. After that one confirm, a delete shows its
 progress in the worktree's own row, and several can run at once. If the worktree
 has uncommitted changes the row says how many and offers **Force remove** or
@@ -150,7 +157,8 @@ list for the highlighted one.
 Worktrees are listed under a header per repo, with manual `[[workspace]]` entries
 last under Other. Hover a repo's header (or Tab to it) for its **⋯** menu: **New
 worktree…** in that repo, **Collapse** / **Expand**, **Reveal in Finder** (**Open
-Folder** on Linux) and, for an added repo, **Remove from window…**. grove
+Folder** on Linux), **Settings…** for its config and, for an added repo, **Remove
+from window…**. grove
 remembers which repos are collapsed. Typing in the filter still finds worktrees
 in a collapsed repo, but ⌘1–⌘9 don't open ones it hides.
 
@@ -180,7 +188,8 @@ on your PATH, and do nothing outside a grove pane. Merge this into the `hooks` o
 
 `grove` loads a repo-local `.grove.toml` (searched upward to the repo root; linked
 worktrees use the main worktree's). If none is found it falls back to the global
-`~/.config/grove/workspaces.toml`.
+`~/.config/grove/workspaces.toml`, and with neither, the window asks to set the
+repo up (see [Quick start](#quick-start)).
 
 ```toml
 # Open a worktree in an external terminal (⌘⇧O, `grove open <name> -w`).
@@ -197,8 +206,8 @@ font_size   = 13                          # pane font size in px
 # path        = ""                       # defaults to this repo (the config's dir)
 prefix        = ""                        # optional name prefix
 panes         = ["claude", ""]            # first = left pane; rest = tabs in a right pane ("" = your shell)
-worktree_root = "~/code/myrepo-worktrees" # where New Worktree creates <root>/<intention>
-base          = "origin/main"             # new-branch start-point (fetched if it's a remote ref)
+worktree_root = "~/code/myrepo-worktrees" # where New Worktree creates <root>/<intention> (default: <repo>-worktrees beside the repo)
+base          = "origin/main"             # new-branch start-point, fetched if it's a remote ref (default: the remote's default branch)
 setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane after creating
 
 # [[workspace]] = a manual one-off entry (not a git worktree, so not deletable).
@@ -212,8 +221,16 @@ setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane afte
 by default). A worktree opens with the first in the left pane and the rest as
 tabs in a right pane, e.g. `["claude", "", "lazygit"]` is claude | zsh, lazygit;
 a single entry opens unsplit. When a tab's program exits its tab closes, and a
-worktree closes with its last tab. Config is read when the window opens; restart
-grove after editing it.
+worktree closes with its last tab.
+
+**Settings… (⌘,)** edits a config file in the app: `terminal`, the font and each
+`[[repo]]`'s settings. When the window shows several repos it has a picker for
+the file, starting at the selected worktree's. Saving applies at once: the font
+and `terminal` straight away, `panes` for worktrees opened after. It writes plain
+TOML, so the file's comments go; a repo's `path` and `[[workspace]]` entries are
+kept as they were but are edited by hand. It won't save over a file that changed
+since the dialog opened. Hand edits apply on **⌘R** (Reload Worktrees re-reads
+the config too).
 
 Add tabs as you go: **⌘T** opens another Claude Code session in the worktree
 (your first Claude entry in `panes`, flags and all, else `claude`) and **⌘⇧T** a

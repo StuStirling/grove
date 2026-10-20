@@ -41,6 +41,7 @@ export function Sidebar(props: {
   onNewIn: (repoPath: string) => void
   onToggle: (repoPath: string) => void
   onReveal: (repoPath: string) => void
+  onSettings: (config: string) => void
   onAskRemove: (repoPath: string) => void
   confirm: string | null // the repo whose Remove from window is being confirmed
   onConfirm: (remove: boolean) => void
@@ -72,6 +73,7 @@ export function Sidebar(props: {
         { label: 'New worktree…', onSelect: () => props.onNewIn(repo.path) },
         { label: props.collapsed.includes(repo.path) ? 'Expand' : 'Collapse', onSelect: () => props.onToggle(repo.path) },
         { label: mac ? 'Reveal in Finder' : 'Open Folder', onSelect: () => props.onReveal(repo.path) },
+        { label: 'Settings…', onSelect: () => props.onSettings(repo.config) },
         // The window's own repo can't go: the window is tied to it.
         ...(repo.added ? ['divider' as const, { label: 'Remove from window…', danger: true, onSelect: () => props.onAskRemove(repo.path) }] : []),
       ],

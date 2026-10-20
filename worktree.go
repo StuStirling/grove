@@ -79,9 +79,19 @@ func branchList(repoPath string) []string {
 }
 
 // defaultBase is the configured start-point for new branches, falling back to
-// origin/develop.
+// the remote's default branch.
 func defaultBase(r Repo) string {
 	if b := strings.TrimSpace(r.Base); b != "" {
+		return b
+	}
+	return remoteHead(expandPath(r.Path))
+}
+
+// remoteHead is the branch origin's HEAD names, the remote's default branch
+// (e.g. "origin/main"), else origin/develop.
+func remoteHead(repoPath string) string {
+	out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+	if b := strings.TrimSpace(string(out)); err == nil && b != "" {
 		return b
 	}
 	return "origin/develop"
@@ -137,7 +147,7 @@ func resolveWorktreeRoot(r Repo) (repoPath, root string, err error) {
 	}
 	root = expandPath(r.WorktreeRoot)
 	if root == "" {
-		return "", "", fmt.Errorf("worktree_root is not set for repo %s", r.Path)
+		root = defaultWorktreeRoot(repoPath)
 	}
 	if !filepath.IsAbs(root) {
 		root = filepath.Join(repoPath, root)

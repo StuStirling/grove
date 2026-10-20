@@ -34,6 +34,10 @@ export function DeleteBranch(arg1, arg2, arg3) {
   return window['go']['main']['App']['DeleteBranch'](arg1, arg2, arg3);
 }
 
+export function InitRepo(arg1, arg2, arg3) {
+  return window['go']['main']['App']['InitRepo'](arg1, arg2, arg3);
+}
+
 export function NewTab(arg1, arg2) {
   return window['go']['main']['App']['NewTab'](arg1, arg2);
 }
@@ -58,6 +62,10 @@ export function Reload() {
   return window['go']['main']['App']['Reload']();
 }
 
+export function ReloadConfig() {
+  return window['go']['main']['App']['ReloadConfig']();
+}
+
 export function Remove(arg1, arg2) {
   return window['go']['main']['App']['Remove'](arg1, arg2);
 }
@@ -70,8 +78,16 @@ export function Reveal(arg1) {
   return window['go']['main']['App']['Reveal'](arg1);
 }
 
+export function SaveSettings(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveSettings'](arg1, arg2, arg3);
+}
+
 export function SeenTab(arg1) {
   return window['go']['main']['App']['SeenTab'](arg1);
+}
+
+export function Settings(arg1) {
+  return window['go']['main']['App']['Settings'](arg1);
 }
 
 export function Size(arg1, arg2, arg3) {
