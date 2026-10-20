@@ -342,3 +342,89 @@ func TestInitialInAddedRepo(t *testing.T) {
 		t.Fatalf("second TakeInitial = %q", got)
 	}
 }
+
+func TestSaveSettings(t *testing.T) {
+	home := shortHome(t)
+	dir := filepath.Join(home, "a")
+	own := groveConfig(t, dir, "# a comment\nterminal = \"kitty {cmd}\"\n[[repo]]\npanes = [\"claude\", \"\"]\n[[workspace]]\nname = \"notes\"\ndir = \"~/notes\"\n")
+	a := newTestApp(own)
+
+	s, err := a.Settings(own.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Config.Repo[0].Path != "" || s.Config.Workspace[0].Dir != "~/notes" {
+		t.Fatalf("Settings resolved paths: %+v", s.Config)
+	}
+	s.Config.FontSize = 15
+	s.Config.Repo[0].WorktreeRoot = "~/wt"
+	if err := a.SaveSettings(own.Path, s.Config, s.Version); err != nil {
+		t.Fatal(err)
+	}
+	// Applied without a restart, and the rest of the file kept as written.
+	if c := a.config(); c.FontSize != 15 || c.Terminal != "kitty {cmd}" || c.Repo[0].WorktreeRoot != "~/wt" || c.Repo[0].Path != dir {
+		t.Errorf("config after save = %+v", c)
+	}
+	data, _ := os.ReadFile(own.Path)
+	for _, want := range []string{`terminal = "kitty {cmd}"`, "font_size = 15", `panes = ["claude", ""]`, `dir = "~/notes"`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("saved file lacks %q:\n%s", want, data)
+		}
+	}
+	if strings.Contains(string(data), "path") || strings.Contains(string(data), "font_family") {
+		t.Errorf("saved file has unset keys:\n%s", data)
+	}
+
+	// The file changed since s was read: refuse rather than overwrite it.
+	if err := a.SaveSettings(own.Path, s.Config, s.Version); err == nil {
+		t.Error("SaveSettings over a changed file succeeded")
+	}
+	if _, err := a.Settings(filepath.Join(home, "other.toml")); err == nil {
+		t.Error("Settings read a file that isn't the window's")
+	}
+}
+
+func TestInitRepo(t *testing.T) {
+	home := shortHome(t)
+	isolateGit(t)
+	dir := filepath.Join(home, "r")
+	gitT(t, "", "init", "-q", dir)
+	gitT(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	t.Chdir(dir)
+
+	// No config anywhere: the window opens for the repo and asks to set it up.
+	a := newApp("", false)
+	init := a.State().Init
+	if a.cfgErr != "" || init == nil || init.Base != "origin/main" || init.WorktreeRoot != "~/r-worktrees" {
+		t.Fatalf("cfgErr %q, Init %+v", a.cfgErr, init)
+	}
+	sock := a.own.socketPath()
+	if err := a.InitRepo(init.Config, init.WorktreeRoot, init.Base); err != nil {
+		t.Fatal(err)
+	}
+	if s := a.State(); s.Init != nil || len(s.Repos) != 1 {
+		t.Errorf("after InitRepo: Init %+v, repos %+v", s.Init, s.Repos)
+	}
+	// The same window still: grove run in the repo now finds it at the same socket.
+	if got := a.own.socketPath(); got != sock {
+		t.Errorf("socket moved from %s to %s once the config was written", sock, got)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, localConfigName))
+	want := "[[repo]]\npanes = [\"claude\", \"\"]\nworktree_root = \"~/r-worktrees\"\nbase = \"origin/main\"\n"
+	if string(data) != want {
+		t.Errorf("wrote:\n%s\nwant:\n%s", data, want)
+	}
+
+	// Another repo with no config, set up from Add Repository, joins the window.
+	other := filepath.Join(home, "o")
+	gitT(t, "", "init", "-q", other)
+	if err := a.InitRepo(repoInit(filepath.Join(other, localConfigName)).Config, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if s := a.State(); len(s.Repos) != 2 || !s.Repos[1].Added {
+		t.Errorf("other repo not added: %+v", s.Repos)
+	}
+	if err := a.InitRepo(filepath.Join(home, localConfigName), "", ""); err == nil {
+		t.Error("InitRepo wrote a config outside a repo's root")
+	}
+}

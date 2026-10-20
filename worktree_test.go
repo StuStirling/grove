@@ -61,11 +61,13 @@ func TestDefaultBase(t *testing.T) {
 	if got := defaultBase(Repo{Base: "origin/main"}); got != "origin/main" {
 		t.Errorf("explicit base: %q", got)
 	}
-	if got := defaultBase(Repo{}); got != "origin/develop" {
-		t.Errorf("empty base fallback: %q", got)
+	repo := gitRepo(t)
+	if got := defaultBase(Repo{Path: repo}); got != "origin/develop" {
+		t.Errorf("no origin/HEAD fallback: %q", got)
 	}
-	if got := defaultBase(Repo{Base: "  "}); got != "origin/develop" {
-		t.Errorf("blank base fallback: %q", got)
+	gitT(t, repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	if got := defaultBase(Repo{Path: repo, Base: "  "}); got != "origin/main" {
+		t.Errorf("blank base, remote's default branch: %q", got)
 	}
 }
 

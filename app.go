@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/BurntSushi/toml"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/menu/keys"
@@ -36,6 +37,7 @@ type App struct {
 	ready  chan struct{} // closed once ctx is set
 	own    *Config       // the repo the window opened for; keys its socket and saved repos
 	cfgErr string
+	init   *RepoInit // the setup prompt, while own is Missing
 	sess   *sessions
 
 	// gitMu serialises branch deletions (Remove's and DeleteBranch's): Wails runs
@@ -68,6 +70,21 @@ type RepoInfo struct {
 	Config string `json:"config"` // its config file: removing the repo takes out all it lists
 }
 
+// RepoInit is a repo with no config yet, as the setup prompt shows it: the
+// defaults it suggests, and the branches to complete the base from.
+type RepoInit struct {
+	Name         string   `json:"name"`
+	Config       string   `json:"config"` // the .grove.toml it creates
+	WorktreeRoot string   `json:"worktreeRoot"`
+	Base         string   `json:"base"`
+	Branches     []string `json:"branches"`
+}
+
+func repoInit(config string) *RepoInit {
+	root := filepath.Dir(config)
+	return &RepoInit{filepath.Base(root), config, tildePath(defaultWorktreeRoot(root)), remoteHead(root), branchList(root)}
+}
+
 // WorkspaceInfo is one sidebar entry.
 type WorkspaceInfo struct {
 	Name     string `json:"name"`
@@ -83,7 +100,9 @@ type WorkspaceInfo struct {
 
 // Snapshot is everything the frontend renders.
 type Snapshot struct {
-	Error      string          `json:"error"` // config failed to load
+	Error      string          `json:"error"`  // config failed to load
+	Config     string          `json:"config"` // the window's own config file
+	Init       *RepoInit       `json:"init"`   // the window's repo has no config: ask to set it up
 	Workspaces []WorkspaceInfo `json:"workspaces"`
 	Repos      []RepoInfo      `json:"repos"`
 	CanCreate  bool            `json:"canCreate"` // a [[repo]] exists to create into
@@ -102,6 +121,9 @@ func newApp(initial string, setup bool) *App {
 		cfg = &Config{}
 	}
 	a.own, a.cfg = cfg, cfg
+	if cfg.Missing {
+		a.init = repoInit(cfg.Path)
+	}
 	a.sess = newSessions(cfg.socketPath(), a.emit)
 	a.ws = cfg.resolve()
 	return a
@@ -171,13 +193,14 @@ func (a *App) addRepo(dir string) (string, error) {
 // and the ones restoreRepos skipped, so they are tried again then.
 func (a *App) saveRepos() {
 	a.mu.Lock()
+	file := a.own.reposFile()
 	var dirs []string
 	for _, r := range a.added {
 		dirs = append(dirs, filepath.Dir(r.cfg.Path))
 	}
 	dirs = append(dirs, a.skipped...)
 	a.mu.Unlock()
-	if err := os.WriteFile(a.own.reposFile(), []byte(strings.Join(dirs, "\n")), 0o644); err != nil {
+	if err := os.WriteFile(file, []byte(strings.Join(dirs, "\n")), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "grove: saving repos: %v\n", err)
 	}
 }
@@ -197,6 +220,44 @@ func (a *App) restoreRepos() {
 			a.mu.Unlock()
 		}
 	}
+}
+
+// reloadConfig re-reads the window's config files, so settings saved in the app
+// or edited by hand apply without a restart, and rescans. If one fails to load,
+// the window keeps the config it had.
+func (a *App) reloadConfig() error {
+	a.mu.Lock()
+	paths := []string{a.own.Path}
+	for _, r := range a.added {
+		paths = append(paths, r.cfg.Path)
+	}
+	a.mu.Unlock()
+	fresh := map[string]*Config{}
+	for _, p := range paths {
+		c, err := readConfig(p)
+		if err != nil {
+			return err
+		}
+		fresh[p] = c
+	}
+	a.mu.Lock()
+	a.own = fresh[a.own.Path]
+	for i, r := range a.added {
+		if c := fresh[r.cfg.Path]; c != nil { // else added since: just read
+			a.added[i].cfg = c
+		}
+	}
+	a.cfg = a.merged()
+	a.mu.Unlock()
+	a.reload()
+	return nil
+}
+
+// isConfig reports whether path is one of the config files this window shows.
+func (a *App) isConfig(path string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return path != "" && (path == a.own.Path || slices.ContainsFunc(a.added, func(r addedRepo) bool { return r.cfg.Path == path }))
 }
 
 // closeRepos stops serving the added repos' sockets, on quit.
@@ -339,7 +400,7 @@ func (a *App) handle(req ipcReq) error {
 func (a *App) State() Snapshot {
 	open, claude := a.sess.snapshot()
 	a.mu.Lock()
-	cfg := a.cfg
+	cfg, own := a.cfg, a.own
 	infos := make([]WorkspaceInfo, len(a.ws))
 	for i, ws := range a.ws {
 		infos[i] = WorkspaceInfo{
@@ -352,10 +413,16 @@ func (a *App) State() Snapshot {
 	repos := make([]RepoInfo, len(cfg.Repo))
 	for i, r := range cfg.Repo {
 		// merged puts the window's own repos first.
-		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(a.own.Repo), Config: r.Config}
+		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(own.Repo), Config: r.Config}
+	}
+	var init *RepoInit
+	if own.Missing {
+		init = a.init
 	}
 	return Snapshot{
 		Error:      a.cfgErr,
+		Config:     own.Path,
+		Init:       init,
 		Workspaces: infos,
 		Repos:      repos,
 		CanCreate:  len(cfg.Repo) > 0,
@@ -371,6 +438,56 @@ func (a *App) State() Snapshot {
 func (a *App) Reload() Snapshot {
 	a.reload()
 	return a.State()
+}
+
+// ReloadConfig re-reads the config files, rescans and returns the new snapshot.
+func (a *App) ReloadConfig() (Snapshot, error) {
+	if err := a.reloadConfig(); err != nil {
+		return Snapshot{}, err
+	}
+	return a.State(), nil
+}
+
+// SettingsFile is a config file as written, for the settings dialog: its paths
+// are not resolved, so it saves back the same.
+type SettingsFile struct {
+	Config  Config `json:"config"`
+	Version string `json:"version"` // see fileVersion
+}
+
+// Settings reads the window's config file at path for the settings dialog.
+func (a *App) Settings(path string) (SettingsFile, error) {
+	if !a.isConfig(path) {
+		return SettingsFile{}, fmt.Errorf("%s is not a config file of this window", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SettingsFile{}, err
+	}
+	var cfg Config
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return SettingsFile{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return SettingsFile{cfg, fileVersion(data)}, nil
+}
+
+// SaveSettings writes cfg to the window's config file at path and applies it.
+// It refuses if the file changed on disk since Settings read it at version.
+func (a *App) SaveSettings(path string, cfg Config, version string) error {
+	if !a.isConfig(path) {
+		return fmt.Errorf("%s is not a config file of this window", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if fileVersion(data) != version {
+		return errors.New("the config file changed on disk since settings opened: reopen settings to see the change")
+	}
+	if err := writeConfig(path, cfg); err != nil {
+		return err
+	}
+	return a.reloadConfig()
 }
 
 // TakeInitial returns the dir of the workspace to select at startup, once. It
@@ -575,22 +692,62 @@ func (a *App) OpenInTerminal(dir string) error {
 	return openInTerminal(ws, a.config().Terminal)
 }
 
+// AddedRepo is what Add Repository did: the repo it added, or, for one with no
+// config yet, the setup prompt to show (InitRepo adds it).
+type AddedRepo struct {
+	Name string    `json:"name"` // "" if cancelled
+	Init *RepoInit `json:"init"`
+}
+
 // AddRepo picks a repository folder and shows its worktrees in this window too,
-// remembering it for next launch. It returns the repo's name ("" if cancelled).
-// A window with no repo of its own (launched from Finder) becomes that repo's.
-func (a *App) AddRepo() (string, error) {
+// remembering it for next launch. A window with no repo of its own (launched
+// from Finder) becomes that repo's.
+func (a *App) AddRepo() (AddedRepo, error) {
 	if a.cfgErr != "" {
-		return "", a.OpenRepo()
+		return AddedRepo{}, a.OpenRepo()
 	}
 	dir, err := wr.OpenDirectoryDialog(a.ctx, wr.OpenDialogOptions{Title: "Add Repository"})
 	if err != nil || dir == "" {
-		return "", err
+		return AddedRepo{}, err
+	}
+	if _, local := resolveConfigPath(dir); !local {
+		if root := mainWorktreeRoot(dir); root != "" {
+			return AddedRepo{Init: repoInit(filepath.Join(root, localConfigName))}, nil
+		}
 	}
 	name, err := a.addRepo(dir)
 	if err == nil {
 		a.saveRepos()
 	}
-	return name, err
+	return AddedRepo{Name: name}, err
+}
+
+// InitRepo writes the .grove.toml at config for a repo with no config yet, from
+// the setup prompt, then shows the repo: as this window's own if the window was
+// opened for it, else added. A config made meanwhile (`grove init`) is kept.
+func (a *App) InitRepo(config, worktreeRoot, base string) error {
+	root := filepath.Dir(config)
+	if filepath.Base(config) != localConfigName || mainWorktreeRoot(root) != root {
+		return fmt.Errorf("%s is not the root of a repository", root)
+	}
+	if !fileExists(config) {
+		// The panes are grove init's.
+		r := Repo{Panes: []string{"claude", ""}, WorktreeRoot: strings.TrimSpace(worktreeRoot), Base: strings.TrimSpace(base)}
+		if err := writeConfig(config, Config{Repo: []Repo{r}}); err != nil {
+			return err
+		}
+	}
+	a.mu.Lock()
+	own := a.own.Path == config
+	a.mu.Unlock()
+	if own {
+		return a.reloadConfig()
+	}
+	_, err := a.addRepo(root)
+	if err == nil {
+		a.saveRepos()
+	}
+	return err
 }
 
 // RemoveRepo takes the added repo with a [[repo]] at path out of the window,
@@ -695,6 +852,8 @@ var shortcuts = []shortcut{
 	{"File", "Delete Worktree…", "delete", "backspace", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "Reload Worktrees", "reload", "r", cmdMod},
+	{"File", "", "", "", nil},
+	{"File", "Settings…", "settings", ",", cmdMod},
 
 	{"View", "Split Right", "split", "d", cmdMod},
 	{"View", "Zoom Pane", "zoom", "return", shiftMod},
