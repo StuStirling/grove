@@ -86,3 +86,49 @@ func startWorktree(r Repo, branch, name string) (Workspace, RepoPlan, error) {
 	}
 	return ws, plan, err
 }
+
+// ---- bound to the frontend ----
+
+// Seed starts the lead repo's Claude on a prompt; the zero Seed starts none.
+type Seed struct {
+	Prompt  string   `json:"prompt"`
+	AddDirs []string `json:"addDirs"` // the other repos' worktrees
+}
+
+// PlanRepo says what starting work on branch would do in the repo at repoPath.
+func (a *App) PlanRepo(repoPath, branch, name string) (RepoPlan, error) {
+	r, err := a.repo(repoPath)
+	if err != nil {
+		return RepoPlan{}, err
+	}
+	return planWorktree(r, branch, name), nil
+}
+
+// StartRepo starts work on branch in the repo at repoPath and opens the
+// worktree, its setup queued unless it already existed. The lead's seed loads
+// the other worktrees' CLAUDE.md and rules too, which --add-dir alone doesn't.
+func (a *App) StartRepo(repoPath, branch, name string, seed Seed) (string, error) {
+	r, err := a.repo(repoPath)
+	if err != nil {
+		return "", err
+	}
+	ws, plan, err := startWorktree(r, branch, name)
+	if err != nil {
+		return "", err
+	}
+	a.reload()
+	setup := r.Setup
+	if plan.Action == "reuse" {
+		setup = ""
+	}
+	if seed.Prompt == "" {
+		a.sess.ensure(ws, setup)
+		return ws.Dir, nil
+	}
+	var env []string
+	if len(seed.AddDirs) > 0 {
+		env = []string{"CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"}
+	}
+	a.sess.seed(ws, setup, seedArgs(seed.Prompt, seed.AddDirs), env)
+	return ws.Dir, nil
+}

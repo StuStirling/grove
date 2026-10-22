@@ -82,6 +82,10 @@ export function OpenURL(arg1) {
   return window['go']['main']['App']['OpenURL'](arg1);
 }
 
+export function PlanRepo(arg1, arg2, arg3) {
+  return window['go']['main']['App']['PlanRepo'](arg1, arg2, arg3);
+}
+
 export function Reload() {
   return window['go']['main']['App']['Reload']();
 }
@@ -116,6 +120,10 @@ export function Settings(arg1) {
 
 export function Size(arg1, arg2, arg3) {
   return window['go']['main']['App']['Size'](arg1, arg2, arg3);
+}
+
+export function StartRepo(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StartRepo'](arg1, arg2, arg3, arg4);
 }
 
 export function State() {

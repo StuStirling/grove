@@ -42,6 +42,8 @@ export function OpenRepo():Promise<void>;
 
 export function OpenURL(arg1:string):Promise<void>;
 
+export function PlanRepo(arg1:string,arg2:string,arg3:string):Promise<main.RepoPlan>;
+
 export function Reload():Promise<main.Snapshot>;
 
 export function ReloadConfig():Promise<main.Snapshot>;
@@ -59,6 +61,8 @@ export function SeenTab(arg1:string):Promise<void>;
 export function Settings(arg1:string):Promise<main.SettingsFile>;
 
 export function Size(arg1:string,arg2:number,arg3:number):Promise<void>;
+
+export function StartRepo(arg1:string,arg2:string,arg3:string,arg4:main.Seed):Promise<string>;
 
 export function State():Promise<main.Snapshot>;
 

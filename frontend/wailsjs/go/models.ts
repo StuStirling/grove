@@ -324,6 +324,36 @@ export namespace main {
 	    }
 	}
 	
+	export class RepoPlan {
+	    action: string;
+	    path: string;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RepoPlan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.action = source["action"];
+	        this.path = source["path"];
+	        this.reason = source["reason"];
+	    }
+	}
+	export class Seed {
+	    prompt: string;
+	    addDirs: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Seed(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.prompt = source["prompt"];
+	        this.addDirs = source["addDirs"];
+	    }
+	}
 	export class SettingsFile {
 	    config: Config;
 	    version: string;

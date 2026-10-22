@@ -841,6 +841,7 @@ var shortcuts = []shortcut{
 	{"File", "", "", "", nil},
 	{"File", "New Worktree…", "new", "n", cmdMod},
 	{"File", "New Worktree from Branch…", "checkout", "n", shiftMod},
+	{"File", "Start Work from Linear…", "linear", "l", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "New Claude Tab", "new-claude", "t", cmdMod},
 	{"File", "New Shell", "new-shell", "t", shiftMod},

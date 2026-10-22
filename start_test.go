@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -76,5 +77,37 @@ func TestStartWorktreeCreateReuseConflict(t *testing.T) {
 	}
 	if _, _, err := startWorktree(r, "stu/eng-3", "eng-2"); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("same folder, other branch: %v", err)
+	}
+}
+
+func TestStartRepo(t *testing.T) {
+	_, r, root := startRepo(t)
+	r.Panes, r.Setup = []string{"claude", ""}, "make setup"
+	a := newTestApp(&Config{Repo: []Repo{r}})
+
+	// The lead: seeded, with the other repos' instructions loaded.
+	dir, err := a.StartRepo(r.Path, "stu/lead", "lead", Seed{Prompt: "plan it", AddDirs: []string{"/other"}})
+	if err != nil || dir != realPath(filepath.Join(root, "lead")) {
+		t.Fatalf("StartRepo = %q, %v", dir, err)
+	}
+	ps := a.sess.open[dir]
+	if ps[0].args != seedArgs("plan it", []string{"/other"}) || !slices.Contains(ps[0].env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1") || ps[1].setup != "make setup" {
+		t.Errorf("lead panes: args %q env %q setup %q", ps[0].args, ps[0].env, ps[1].setup)
+	}
+	// Another repo: no seed, setup queued.
+	dir, _ = a.StartRepo(r.Path, "stu/other", "other", Seed{})
+	if ps := a.sess.open[dir]; ps[0].args != "" || ps[0].env != nil || ps[1].setup != "make setup" {
+		t.Errorf("non-lead panes: %+v %+v", ps[0], ps[1])
+	}
+	// A lead alone: nothing to add, so no env.
+	dir, _ = a.StartRepo(r.Path, "stu/solo", "solo", Seed{Prompt: "p"})
+	if a.sess.open[dir][0].env != nil {
+		t.Errorf("solo lead env = %q", a.sess.open[dir][0].env)
+	}
+	if p, err := a.PlanRepo(r.Path, "stu/lead", "x"); err != nil || p.Action != "reuse" {
+		t.Errorf("PlanRepo = %+v, %v", p, err)
+	}
+	if !slices.ContainsFunc(shortcutInfos(), func(s ShortcutInfo) bool { return s.Label == "Start Work from Linear" }) {
+		t.Error("no Start Work from Linear shortcut")
 	}
 }
