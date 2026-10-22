@@ -412,11 +412,27 @@ func TestCloseAllKillsWhatIgnoresSIGHUP(t *testing.T) {
 }
 
 func TestSeedArgs(t *testing.T) {
-	if got, want := seedArgs("p", nil), `--permission-mode plan 'p'`; got != want {
-		t.Errorf("seedArgs = %s, want %s", got, want)
+	args, env := seedArgs("p", nil)
+	if want := `--permission-mode plan "$GROVE_SEED_PROMPT"`; args != want || !slices.Equal(env, []string{"GROVE_SEED_PROMPT=p"}) {
+		t.Errorf("seedArgs = %s %q", args, env)
 	}
-	if got, want := seedArgs("it's", []string{"/a", "/b c"}), `--permission-mode plan --add-dir '/a' --add-dir '/b c' 'it'\''s'`; got != want {
-		t.Errorf("seedArgs = %s, want %s", got, want)
+	args, env = seedArgs("it's", []string{"/a", "/b c"})
+	if want := `--permission-mode plan --add-dir "$GROVE_SEED_DIR_1" --add-dir "$GROVE_SEED_DIR_2" "$GROVE_SEED_PROMPT"`; args != want ||
+		!slices.Equal(env, []string{"GROVE_SEED_DIR_1=/a", "GROVE_SEED_DIR_2=/b c", "GROVE_SEED_PROMPT=it's"}) {
+		t.Errorf("seedArgs = %s %q", args, env)
+	}
+}
+
+// Ticket text comes from Linear, so none of it may reach the command the pane's
+// shell parses: fish, for one, reads \' inside single quotes as an escape.
+func TestSeedKeepsTicketTextOutOfTheCommand(t *testing.T) {
+	prompt := `it\'s'; touch pwned`
+	args, env := seedArgs(prompt, []string{"/a b; touch pwned-dir"})
+	if strings.Contains(args, "pwned") {
+		t.Errorf("ticket text in the command: %s", args)
+	}
+	if !slices.Contains(env, "GROVE_SEED_PROMPT="+prompt) {
+		t.Errorf("prompt missing from env: %q", env)
 	}
 }
 
@@ -460,8 +476,9 @@ func TestSeedReachesClaudeVerbatim(t *testing.T) {
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	r := &recorder{}
 	s := newSessions("", r.emit)
-	prompt := "it's \"quoted\" $HOME \x60id\x60\nline 2"
-	ps := s.seed(Workspace{Name: "w", Dir: t.TempDir(), Panes: []string{"claude"}}, "", seedArgs(prompt, []string{"/a b"}), []string{"SEEDED=1"})
+	prompt := "it's \\' \"quoted\" $HOME \x60id\x60\nline 2"
+	args, env := seedArgs(prompt, []string{"/a b"})
+	ps := s.seed(Workspace{Name: "w", Dir: t.TempDir(), Panes: []string{"claude"}}, "", args, append(env, "SEEDED=1"))
 	if err := s.start(ps[0].ID, 200, 24); err != nil {
 		t.Fatal(err)
 	}

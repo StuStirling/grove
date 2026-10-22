@@ -91,7 +91,8 @@ func TestStartRepo(t *testing.T) {
 		t.Fatalf("StartRepo = %q, %v", dir, err)
 	}
 	ps := a.sess.open[dir]
-	if ps[0].args != seedArgs("plan it", []string{"/other"}) || !slices.Contains(ps[0].env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1") || ps[1].setup != "make setup" {
+	args, env := seedArgs("plan it", []string{"/other"})
+	if ps[0].args != args || !slices.Equal(ps[0].env, append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")) || ps[1].setup != "make setup" {
 		t.Errorf("lead panes: args %q env %q setup %q", ps[0].args, ps[0].env, ps[1].setup)
 	}
 	// Another repo: no seed, setup queued.
@@ -99,10 +100,10 @@ func TestStartRepo(t *testing.T) {
 	if ps := a.sess.open[dir]; ps[0].args != "" || ps[0].env != nil || ps[1].setup != "make setup" {
 		t.Errorf("non-lead panes: %+v %+v", ps[0], ps[1])
 	}
-	// A lead alone: nothing to add, so no env.
+	// A lead alone: no other repos' instructions to load.
 	dir, _ = a.StartRepo(r.Path, "stu/solo", "solo", Seed{Prompt: "p"})
-	if a.sess.open[dir][0].env != nil {
-		t.Errorf("solo lead env = %q", a.sess.open[dir][0].env)
+	if env := a.sess.open[dir][0].env; slices.Contains(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1") {
+		t.Errorf("solo lead env = %q", env)
 	}
 	if p, err := a.PlanRepo(r.Path, "stu/lead", "x"); err != nil || p.Action != "reuse" {
 		t.Errorf("PlanRepo = %+v, %v", p, err)

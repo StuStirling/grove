@@ -153,13 +153,19 @@ func claudeCmd(ws Workspace) string {
 }
 
 // seedArgs are the arguments that start Claude in plan mode on prompt, with
-// access to addDirs, quoted for the pane's shell.
-func seedArgs(prompt string, addDirs []string) string {
-	args := []string{"--permission-mode", "plan"}
-	for _, d := range addDirs {
-		args = append(args, "--add-dir", shellQuote(d))
+// access to addDirs, and the env they read. The prompt is ticket text and shells
+// quote differently (fish reads \' inside single quotes as an escape), so the
+// values travel in env and the command only names them, double-quoted, which
+// sh, bash, zsh and fish all expand to the value as one word.
+func seedArgs(prompt string, addDirs []string) (args string, env []string) {
+	parts := []string{"--permission-mode", "plan"}
+	for i, d := range addDirs {
+		k := fmt.Sprintf("GROVE_SEED_DIR_%d", i+1)
+		parts = append(parts, "--add-dir", `"$`+k+`"`)
+		env = append(env, k+"="+d)
 	}
-	return strings.Join(append(args, shellQuote(prompt)), " ")
+	parts = append(parts, `"$GROVE_SEED_PROMPT"`)
+	return strings.Join(parts, " "), append(env, "GROVE_SEED_PROMPT="+prompt)
 }
 
 // closeTab stops one pane, as closing a terminal tab does. The workspace closes

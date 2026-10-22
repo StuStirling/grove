@@ -125,10 +125,10 @@ func (a *App) StartRepo(repoPath, branch, name string, seed Seed) (string, error
 		a.sess.ensure(ws, setup)
 		return ws.Dir, nil
 	}
-	var env []string
+	args, env := seedArgs(seed.Prompt, seed.AddDirs)
 	if len(seed.AddDirs) > 0 {
-		env = []string{"CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"}
+		env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
 	}
-	a.sess.seed(ws, setup, seedArgs(seed.Prompt, seed.AddDirs), env)
+	a.sess.seed(ws, setup, args, env)
 	return ws.Dir, nil
 }
