@@ -8,7 +8,7 @@ import * as rm from './removal'
 import { groups } from './repos'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { errText, keepFocus, key } from './util'
-import { ConnectDialog, LinearAccountRow, SearchPalette } from './Linear'
+import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
 import { LINEAR_REJECTED, type Ticket } from './start'
 
 // Worktrees are keyed by dir everywhere: two repos in one window can share
@@ -777,6 +777,19 @@ export default function App() {
           }}
           onPick={(ticket) => setModal({ kind: 'linear-start', ticket })}
           onNeedConnect={(rejected) => setModal({ kind: 'linear-connect', rejected, after: { kind: 'linear-search' } })}
+        />
+      )}
+      {modal?.kind === 'linear-start' && snap && (
+        <StartWork
+          snap={snap}
+          ticket={modal.ticket}
+          current={target()?.repoPath ?? ''}
+          onCancel={() => setModal(null)}
+          onDone={(dir, n) => {
+            setModal(null)
+            say(n > 1 ? `started work in ${n} repos` : 'started work')
+            openWs(dir)
+          }}
         />
       )}
     </div>

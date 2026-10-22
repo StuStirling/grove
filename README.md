@@ -130,7 +130,7 @@ Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (pl
 | Open in external terminal | ⌘⇧O | Open link | ⌘-click |
 | Add repository to this window | ⌘O | Select over a mouse-aware app | ⌥-drag |
 | Settings… | ⌘, | Keyboard shortcuts | ⌘/ |
-| | | Delete to line start | ⌘⌫ |
+| Start work from Linear… | ⌘L | Delete to line start | ⌘⌫ |
 
 While the worktree list has focus (⌘P), ⌘W / ⌘⌫ / ⌘⇧O act on the highlighted
 worktree; otherwise they act on the one you're in. In a pane, ⌘⌫ deletes to the
@@ -183,6 +183,35 @@ on your PATH, and do nothing outside a grove pane. Merge this into the `hooks` o
   }
 }
 ```
+
+## Linear
+
+**Start Work from Linear… (⌘L)** finds a Linear issue or project and starts work
+on it in the window's repos. The first time, grove asks for a personal API key
+(Linear ▸ Settings ▸ Account ▸ Security & access, with Read access). It checks
+the key with Linear and keeps it in the macOS Keychain (on Linux, through
+`secret-tool` from `libsecret-tools`), never in a config file. **Settings… (⌘,)**
+shows whose key it is and disconnects it. grove only reads from Linear.
+
+With nothing typed, the palette lists the open issues assigned to you and the
+projects you lead or belong to; typing searches the workspace, and an identifier
+like `ENG-412` goes straight to that issue. An issue whose branch is already
+checked out says so, and ↩ goes to that worktree. ⌘↩ opens the pick in Linear.
+
+Picking one opens **Start work**: tick the repos it touches and choose the
+**lead**. Each ticked repo gets a worktree on the same branch (an issue's branch
+from Linear; a project's is suggested from its name), using that repo's own
+`worktree_root`, `base` and `setup`. A branch that exists already, locally or on
+the remote, is checked out; one already checked out in a worktree reuses it; and
+a folder in the way shows on the repo's row before anything is created. The
+other repos are created first, then the lead, whose Claude (its first Claude
+entry in `panes`) starts in plan mode with the ticket as its prompt and
+`--add-dir` for each other worktree, with
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` so their `CLAUDE.md` and rules
+load too. A project's prompt carries its description and all its issues, done
+ones marked, and asks for an end-to-end plan across the repos. Untick **Start
+Claude in plan mode** to just create the worktrees. grove remembers which repos
+you ticked.
 
 ## Configuration
 

@@ -1,7 +1,22 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import * as api from '../wailsjs/go/main/App'
 import type { main } from '../wailsjs/go/models'
-import { existingWorktree, latest, LINEAR_LIMITED, LINEAR_NOT_CONNECTED, LINEAR_REJECTED, type Ticket } from './start'
+import {
+  buildPrompt,
+  clashes,
+  defaultRepos,
+  existingWorktree,
+  latest,
+  LINEAR_LIMITED,
+  LINEAR_NOT_CONNECTED,
+  LINEAR_REJECTED,
+  nextLead,
+  REPOS_KEY,
+  suggestBranch,
+  suggestName,
+  type Target,
+  type Ticket,
+} from './start'
 import { errText, keepFocus } from './util'
 
 const SECURITY_URL = 'https://linear.app/settings/account/security'
@@ -339,5 +354,312 @@ function ProjectGlyph() {
       <rect x="1.75" y="1.75" width="10.5" height="10.5" rx="2.5" fill="none" stroke="var(--idle)" strokeWidth="1.5" />
       <path d="M4.5 7 H9.5 M4.5 4.5 H9.5 M4.5 9.5 H7.5" stroke="var(--idle)" strokeWidth="1.2" strokeLinecap="round" />
     </svg>
+  )
+}
+
+const DONE = ['completed', 'canceled']
+const ACTION: Record<string, string> = { create: 'new branch', checkout: 'existing branch', reuse: 'existing worktree' }
+
+const savedRepos = (): string[] => {
+  try {
+    const v = JSON.parse(localStorage.getItem(REPOS_KEY) ?? '[]')
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
+}
+
+const openLink = (url: string) => (e: React.MouseEvent) => {
+  e.preventDefault()
+  api.OpenURL(url)
+}
+
+type Row = { state: 'running' | 'done' | 'failed' | 'skipped'; dir?: string; err?: string }
+
+// StartWork picks the repos, lead, branch and worktree name for a ticket, then
+// creates the worktrees: the other repos first, in parallel, then the lead, so
+// its seed only adds worktrees that exist.
+export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current: string; onDone: (leadDir: string, created: number) => void; onCancel: () => void }) {
+  const { snap, ticket, onDone, onCancel } = props
+  const repos = snap.repos ?? []
+  const nameOf = (p: string) => repos.find((r) => r.path === p)?.name ?? p
+  const [ticked, setTicked] = useState(() => defaultRepos(savedRepos(), repos, props.current))
+  const [lead, setLead] = useState(() => nextLead(props.current, ticked))
+  const [branch, setBranch] = useState(() => suggestBranch(ticket))
+  const [name, setName] = useState(() => suggestName(ticket))
+  const [seed, setSeed] = useState(true)
+  const [showPrompt, setShowPrompt] = useState(false)
+  const [plans, setPlans] = useState<Record<string, main.RepoPlan>>({})
+  const [planning, setPlanning] = useState(true)
+  const [err, setErr] = useState('')
+  const [phase, setPhase] = useState<'form' | 'creating'>('form')
+  const [rows, setRows] = useState<Record<string, Row>>({})
+  const seq = useRef(latest()).current
+
+  // Plan each ticked repo once the fields settle, so conflicts show before anything is created.
+  useEffect(() => {
+    const id = seq.next()
+    setPlanning(true)
+    const t = setTimeout(
+      () =>
+        Promise.all(ticked.map((p) => api.PlanRepo(p, branch, name).then((pl) => [p, pl] as const))).then(
+          (ps) => {
+            if (!seq.current(id)) return
+            setPlans(Object.fromEntries(ps))
+            setErr('')
+            setPlanning(false)
+          },
+          (e) => {
+            if (!seq.current(id)) return
+            setErr(errText(e))
+            setPlanning(false)
+          },
+        ),
+      250,
+    )
+    return () => clearTimeout(t)
+  }, [ticked, branch, name])
+
+  const others = ticked.filter((p) => p !== lead)
+  const targets: Target[] = (lead ? [lead, ...others] : []).map((p) => ({ repo: nameOf(p), path: plans[p]?.path ?? '' }))
+  const clash = clashes(targets)
+  const problem = (p: string) => (plans[p]?.action === 'conflict' ? plans[p].reason : clash[nameOf(p)])
+  const blocked = ticked.length === 0 || planning || ticked.some(problem)
+
+  function toggle(p: string) {
+    const next = repos.map((r) => r.path).filter((x) => (x === p ? !ticked.includes(p) : ticked.includes(x)))
+    setTicked(next)
+    setLead((l) => nextLead(l, next))
+  }
+
+  const runRepo = (p: string) => {
+    setRows((r) => ({ ...r, [p]: { state: 'running' } }))
+    api.StartRepo(p, branch, name, { prompt: '', addDirs: [] }).then(
+      (dir) => setRows((r) => ({ ...r, [p]: { state: 'done', dir } })),
+      (e) => setRows((r) => ({ ...r, [p]: { state: 'failed', err: errText(e) } })),
+    )
+  }
+
+  // The lead starts once every other repo is done or skipped.
+  useEffect(() => {
+    if (phase !== 'creating' || rows[lead] || !others.every((p) => rows[p]?.state === 'done' || rows[p]?.state === 'skipped')) return
+    const done = others.filter((p) => rows[p]?.state === 'done')
+    const leadTarget = { repo: nameOf(lead), path: plans[lead]?.path ?? '' }
+    const s = seed
+      ? {
+          prompt: buildPrompt(ticket, [leadTarget, ...done.map((p) => ({ repo: nameOf(p), path: rows[p].dir ?? '' }))], branch),
+          addDirs: done.map((p) => rows[p].dir ?? ''),
+        }
+      : { prompt: '', addDirs: [] }
+    setRows((r) => ({ ...r, [lead]: { state: 'running' } }))
+    api.StartRepo(lead, branch, name, s).then(
+      (dir) => onDone(dir, done.length + 1),
+      (e) => setRows((r) => ({ ...r, [lead]: { state: 'failed', err: errText(e) } })),
+    )
+  }, [phase, rows])
+
+  function create() {
+    if (blocked) return
+    localStorage.setItem(REPOS_KEY, JSON.stringify(ticked))
+    setPhase('creating')
+    others.forEach(runRepo)
+  }
+
+  // Retrying the lead clears its row, and the effect above starts it again.
+  const retry = (p: string) =>
+    p === lead
+      ? setRows((r) => {
+          const rest = { ...r }
+          delete rest[p]
+          return rest
+        })
+      : runRepo(p)
+
+  const n = ticked.length
+  const prompt = buildPrompt(ticket, targets, branch)
+  const command = ['claude --permission-mode plan', ...others.map((p) => '--add-dir ' + (plans[p]?.path ?? ''))].join(' \\\n  ')
+
+  return (
+    <div className="overlay">
+      <form
+        className="dialog form start"
+        role="dialog"
+        tabIndex={-1}
+        onBlur={keepFocus}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (phase === 'form') create()
+        }}
+        onKeyDown={(e) => e.key === 'Escape' && (e.preventDefault(), onCancel())}
+      >
+        <h2>{ticket.kind === 'issue' ? `Start work on ${ticket.issue.id}` : 'Start work on a project'}</h2>
+        <TicketCard ticket={ticket} />
+        {phase === 'form' ? (
+          <>
+            <div className="repos-head">
+              <span>Repositories in this window</span>
+              <span>lead</span>
+            </div>
+            <div className="repos">
+              {repos.map((r) => {
+                const on = ticked.includes(r.path)
+                const plan = plans[r.path]
+                const why = on && problem(r.path)
+                return (
+                  <div key={r.path} className="repo-row">
+                    <div className="repo-line">
+                      <label>
+                        <input type="checkbox" checked={on} onChange={() => toggle(r.path)} />
+                        <b>{r.name}</b>
+                        <span className="detail">{on && plan && plan.action !== 'conflict' ? `${ACTION[plan.action]} → ${plan.path}` : ''}</span>
+                      </label>
+                      <input type="radio" name="lead" aria-label={`Make ${r.name} the lead`} checked={on && r.path === lead} disabled={!on} onChange={() => setLead(r.path)} />
+                    </div>
+                    {why && <p className="err">{why}</p>}
+                  </div>
+                )
+              })}
+            </div>
+            <div className="cols">
+              <label>
+                <span>
+                  Branch <small>{ticket.kind === 'issue' ? 'from Linear' : 'suggested from the project name'}</small>
+                </span>
+                <input value={branch} onChange={(e) => setBranch(e.target.value)} spellCheck={false} />
+              </label>
+              <label className="name">
+                <span>Worktree name</span>
+                <input value={name} onChange={(e) => setName(e.target.value)} spellCheck={false} />
+              </label>
+            </div>
+            {lead && (
+              <label className="check">
+                <input type="checkbox" checked={seed} onChange={() => setSeed(!seed)} />
+                <span>
+                  Start Claude in plan mode in {nameOf(lead)}
+                  {n > 1 && ` with the other ${n === 2 ? 'worktree' : `${n - 1} worktrees`} added`}
+                </span>
+              </label>
+            )}
+            {lead && seed && (
+              <div className="prompt">
+                <button type="button" className="link" onClick={() => setShowPrompt(!showPrompt)} aria-expanded={showPrompt}>
+                  {showPrompt ? '▾ Hide the prompt' : '▸ Show the prompt'}
+                </button>
+                {showPrompt && <pre>{command + " \\\n  '<the prompt>'\n\n" + prompt}</pre>}
+              </div>
+            )}
+            {err && <p className="err">{err}</p>}
+            <div className="buttons">
+              <button type="button" onClick={onCancel}>
+                Back <kbd>esc</kbd>
+              </button>
+              <button type="submit" className="primary" disabled={blocked}>
+                {n === 1 ? 'Create worktree' : `Create ${n} worktrees`} <kbd>↩</kbd>
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="repos">
+              {[...others, lead].map((p) => {
+                const row = rows[p]
+                const detail = !row
+                  ? p === lead
+                    ? 'waiting for the others'
+                    : ''
+                  : row.state === 'running'
+                    ? 'creating…'
+                    : row.state === 'skipped'
+                      ? 'skipped'
+                      : row.state === 'done'
+                        ? row.dir
+                        : row.err
+                return (
+                  <div key={p} className={'repo-row' + (row?.state === 'failed' ? ' failed' : '')}>
+                    <div className="repo-line">
+                      {!row || row.state === 'running' ? (
+                        <span className="spinner" aria-hidden="true" />
+                      ) : (
+                        <i className={'mark ' + row.state}>{row.state === 'done' ? '✓' : row.state === 'failed' ? '✕' : '–'}</i>
+                      )}
+                      <b>{nameOf(p)}</b>
+                      <span className="detail">
+                        {detail}
+                        {p === lead && ' · lead'}
+                      </span>
+                    </div>
+                    {row?.state === 'failed' && (
+                      <span className="rm-actions">
+                        <button type="button" onClick={() => retry(p)}>
+                          Retry
+                        </button>
+                        {p !== lead && (
+                          <button type="button" onClick={() => setRows((r) => ({ ...r, [p]: { state: 'skipped' } }))}>
+                            Skip {nameOf(p)}
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <div className="buttons">
+              <span className="hint">Worktrees already created stay if you close.</span>
+              <button type="button" onClick={onCancel}>
+                Close <kbd>esc</kbd>
+              </button>
+            </div>
+          </>
+        )}
+      </form>
+    </div>
+  )
+}
+
+function TicketCard({ ticket }: { ticket: Ticket }) {
+  if (ticket.kind === 'issue') {
+    const i = ticket.issue
+    return (
+      <div className="ticket">
+        <div className="ticket-meta">
+          <StateGlyph type={i.stateType} />
+          <span>{[i.id, i.state, i.project].filter(Boolean).join(' · ')}</span>
+          <a href={i.url} onClick={openLink(i.url)}>
+            Open in Linear ↗
+          </a>
+        </div>
+        <div className="ticket-title">{i.title}</div>
+        {i.description && <p className="ticket-desc">{i.description}</p>}
+      </div>
+    )
+  }
+  const p = ticket.project
+  const issues = p.issues ?? []
+  return (
+    <div className="ticket">
+      <div className="ticket-meta">
+        <ProjectGlyph />
+        <span>{['Project', p.status, `${Math.round(p.progress * 100)}% done`, p.targetDate && `target ${shortDate(p.targetDate)}`].filter(Boolean).join(' · ')}</span>
+        <a href={p.url} onClick={openLink(p.url)}>
+          Open in Linear ↗
+        </a>
+      </div>
+      <div className="ticket-title">{p.name}</div>
+      {p.description && <p className="ticket-desc">{p.description}</p>}
+      {issues.length > 0 && (
+        <div className="ticket-issues">
+          <span className="hint">All {issues.length} issues go into the plan, done ones marked so Claude doesn't plan them again</span>
+          {issues.map((i) => (
+            <div key={i.id} className={DONE.includes(i.stateType) ? 'done' : ''}>
+              <span className="id">{i.id}</span>
+              <span className="title">{i.title}</span>
+              <span>{i.state}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
