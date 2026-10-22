@@ -70,10 +70,10 @@ Every new worktree opens, with its repo's `setup` typed into its shell pane, as 
 The lead's Claude command is the lead repo's first Claude entry in `panes`, flags included, else `claude` (the rule ⌘T uses). grove appends:
 
 ```
---permission-mode plan [--add-dir '<worktree>' ...] '<prompt>'
+--permission-mode plan [--add-dir "$GROVE_SEED_DIR_1" ...] "$GROVE_SEED_PROMPT"
 ```
 
-with each argument single-quote escaped, and sets `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` in that pane's environment when there is at least one `--add-dir`. The pane's visible command stays as configured, so its tab name and Claude status marks work as usual.
+with the values in the pane's environment, so no ticket text is ever parsed by the user's shell (fish, for one, quotes differently from sh). It also sets `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` in that environment when there is at least one `--add-dir`. The pane's visible command stays as configured, so its tab name and Claude status marks work as usual.
 
 ### Issue prompt
 
