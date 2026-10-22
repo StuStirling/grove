@@ -34,8 +34,32 @@ export function DeleteBranch(arg1, arg2, arg3) {
   return window['go']['main']['App']['DeleteBranch'](arg1, arg2, arg3);
 }
 
+export function GetLinearIssue(arg1) {
+  return window['go']['main']['App']['GetLinearIssue'](arg1);
+}
+
+export function GetLinearProject(arg1) {
+  return window['go']['main']['App']['GetLinearProject'](arg1);
+}
+
 export function InitRepo(arg1, arg2, arg3) {
   return window['go']['main']['App']['InitRepo'](arg1, arg2, arg3);
+}
+
+export function LinearAccount() {
+  return window['go']['main']['App']['LinearAccount']();
+}
+
+export function LinearConnect(arg1) {
+  return window['go']['main']['App']['LinearConnect'](arg1);
+}
+
+export function LinearDisconnect() {
+  return window['go']['main']['App']['LinearDisconnect']();
+}
+
+export function LinearSearch(arg1) {
+  return window['go']['main']['App']['LinearSearch'](arg1);
 }
 
 export function NewTab(arg1, arg2) {
@@ -56,6 +80,10 @@ export function OpenRepo() {
 
 export function OpenURL(arg1) {
   return window['go']['main']['App']['OpenURL'](arg1);
+}
+
+export function PlanRepo(arg1, arg2, arg3) {
+  return window['go']['main']['App']['PlanRepo'](arg1, arg2, arg3);
 }
 
 export function Reload() {
@@ -92,6 +120,10 @@ export function Settings(arg1) {
 
 export function Size(arg1, arg2, arg3) {
   return window['go']['main']['App']['Size'](arg1, arg2, arg3);
+}
+
+export function StartRepo(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['StartRepo'](arg1, arg2, arg3, arg4);
 }
 
 export function State() {

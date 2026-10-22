@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/base64"
 	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -407,4 +409,82 @@ func TestCloseAllKillsWhatIgnoresSIGHUP(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("closeAll returned without killing a pane that ignores SIGHUP")
 	}
+}
+
+func TestSeedArgs(t *testing.T) {
+	args, env := seedArgs("p", nil)
+	if want := `--permission-mode plan "$GROVE_SEED_PROMPT"`; args != want || !slices.Equal(env, []string{"GROVE_SEED_PROMPT=p"}) {
+		t.Errorf("seedArgs = %s %q", args, env)
+	}
+	args, env = seedArgs("it's", []string{"/a", "/b c"})
+	if want := `--permission-mode plan --add-dir "$GROVE_SEED_DIR_1" --add-dir "$GROVE_SEED_DIR_2" "$GROVE_SEED_PROMPT"`; args != want ||
+		!slices.Equal(env, []string{"GROVE_SEED_DIR_1=/a", "GROVE_SEED_DIR_2=/b c", "GROVE_SEED_PROMPT=it's"}) {
+		t.Errorf("seedArgs = %s %q", args, env)
+	}
+}
+
+// Ticket text comes from Linear, so none of it may reach the command the pane's
+// shell parses: fish, for one, reads \' inside single quotes as an escape.
+func TestSeedKeepsTicketTextOutOfTheCommand(t *testing.T) {
+	prompt := `it\'s'; touch pwned`
+	args, env := seedArgs(prompt, []string{"/a b; touch pwned-dir"})
+	if strings.Contains(args, "pwned") {
+		t.Errorf("ticket text in the command: %s", args)
+	}
+	if !slices.Contains(env, "GROVE_SEED_PROMPT="+prompt) {
+		t.Errorf("prompt missing from env: %q", env)
+	}
+}
+
+func TestSeedPanes(t *testing.T) {
+	s := newSessions("", func(string, ...any) {})
+	ws := Workspace{Name: "w", Dir: t.TempDir(), Panes: []string{"claude --model opus", ""}}
+
+	// Not open: the configured panes, the Claude one seeded, its command as shown unchanged.
+	ps := s.seed(ws, "make setup", "--x", []string{"SEEDED=1"})
+	if len(ps) != 2 || ps[0].Cmd != "claude --model opus" || ps[0].Kind != "claude" {
+		t.Fatalf("panes = %+v", ps)
+	}
+	if p := s.panes[ps[0].ID]; p.args != "--x" || !slices.Equal(p.env, []string{"SEEDED=1"}) {
+		t.Errorf("claude pane: args %q env %q", p.args, p.env)
+	}
+	if p := s.panes[ps[1].ID]; p.setup != "make setup" || p.args != "" {
+		t.Errorf("shell pane: setup %q args %q", p.setup, p.args)
+	}
+
+	// Open already: a new Claude tab carries the seed.
+	ps = s.seed(ws, "", "--y", nil)
+	if len(ps) != 3 || ps[2].Cmd != "claude --model opus" || s.panes[ps[2].ID].args != "--y" {
+		t.Errorf("open workspace: %+v", ps)
+	}
+
+	// No Claude entry in panes: the seed runs plain claude in a tab of its own.
+	ps = s.seed(Workspace{Name: "v", Dir: t.TempDir(), Panes: []string{""}}, "", "--z", nil)
+	if len(ps) != 2 || ps[1].Cmd != "claude" || s.panes[ps[1].ID].args != "--z" {
+		t.Errorf("no claude pane: %+v", ps)
+	}
+}
+
+func TestSeedReachesClaudeVerbatim(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	bin := t.TempDir()
+	fake := filepath.Join(bin, "claude")
+	writeT(t, fake, "#!/bin/sh\nprintf '[%s]' \"$@\"; printf 'env=%s;' \"$SEEDED\"\n")
+	if err := os.Chmod(fake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	r := &recorder{}
+	s := newSessions("", r.emit)
+	prompt := "it's \\' \"quoted\" $HOME \x60id\x60\nline 2"
+	args, env := seedArgs(prompt, []string{"/a b"})
+	ps := s.seed(Workspace{Name: "w", Dir: t.TempDir(), Panes: []string{"claude"}}, "", args, append(env, "SEEDED=1"))
+	if err := s.start(ps[0].ID, 200, 24); err != nil {
+		t.Fatal(err)
+	}
+	want := "[--permission-mode][plan][--add-dir][/a b][" + prompt + "]env=1;"
+	waitFor(t, "the fake claude's output", func() bool {
+		return strings.Contains(strings.ReplaceAll(r.output(), "\r\n", "\n"), want)
+	})
+	s.closeAll()
 }

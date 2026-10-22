@@ -53,6 +53,8 @@ type App struct {
 	initial   string   // workspace (name or dir) to select on first load
 	setup     bool     // queue initial's setup command: `grove new` made it
 	menuNames []string // Go menu labels, to rebuild it on change
+	linKey    string   // the Linear API key, read from the keychain once
+	linName   string   // the Linear account's name, once known
 }
 
 // addedRepo is another repo's config shown in this window. The window serves
@@ -538,10 +540,7 @@ func (a *App) NewTab(dir, kind string) (Pane, error) {
 	cmd := ""
 	switch kind {
 	case "claude":
-		cmd = "claude"
-		if i := slices.IndexFunc(ws.Panes, func(c string) bool { return paneKind(c) == "claude" }); i >= 0 {
-			cmd = ws.Panes[i]
-		}
+		cmd = claudeCmd(ws)
 	case "shell":
 	default:
 		return Pane{}, fmt.Errorf("unknown tab kind %q", kind)
@@ -842,6 +841,7 @@ var shortcuts = []shortcut{
 	{"File", "", "", "", nil},
 	{"File", "New Worktree…", "new", "n", cmdMod},
 	{"File", "New Worktree from Branch…", "checkout", "n", shiftMod},
+	{"File", "Start Work from Linear…", "linear", "l", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "New Claude Tab", "new-claude", "t", cmdMod},
 	{"File", "New Shell", "new-shell", "t", shiftMod},

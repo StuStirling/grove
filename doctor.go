@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
@@ -61,6 +62,18 @@ func doctor() int {
 		check("terminal", cfg.Terminal, true)
 	} else {
 		fmt.Printf("[opt ] %-12s %s\n", "terminal", "unset: Open in Terminal (`grove open -w`) disabled")
+	}
+
+	// keychain (optional: only needed to connect Linear)
+	switch runtime.GOOS {
+	case "darwin":
+		check("keychain", securityBin, fileExists(securityBin))
+	case "linux":
+		if p, err := exec.LookPath("secret-tool"); err == nil {
+			check("keychain", p, true)
+		} else {
+			fmt.Printf("[opt ] %-12s %s\n", "keychain", errNoSecretTool)
+		}
 	}
 
 	if ok {

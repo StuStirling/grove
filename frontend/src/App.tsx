@@ -7,12 +7,22 @@ import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
 import { groups } from './repos'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
-import { errText, key } from './util'
+import { errText, keepFocus, key } from './util'
+import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
+import { LINEAR_REJECTED, type Ticket } from './start'
 
 // Worktrees are keyed by dir everywhere: two repos in one window can share
 // worktree names.
 type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; resolve: (yes: boolean) => void }
-type Modal = { kind: 'new' | 'checkout'; repo: string } | { kind: 'settings'; config: string } | { kind: 'init'; init: main.RepoInit } | { kind: 'help' } | Confirm
+type Modal =
+  | { kind: 'new' | 'checkout'; repo: string }
+  | { kind: 'settings'; config: string }
+  | { kind: 'init'; init: main.RepoInit }
+  | { kind: 'help' }
+  | Confirm
+  | { kind: 'linear-connect'; rejected: boolean; after: Modal | null } // after: what opens once connected
+  | { kind: 'linear-search' }
+  | { kind: 'linear-start'; ticket: Ticket }
 
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
@@ -385,6 +395,11 @@ export default function App() {
         if (!snap?.canCreate) return say('no [[repo]] configured to create into')
         // Create in the targeted worktree's repo; the form can switch it.
         return setModal({ kind: action, repo: ws?.repoPath || repos[0].path })
+      case 'linear':
+        return api.LinearAccount().then(
+          (a) => setModal(a.connected ? { kind: 'linear-search' } : { kind: 'linear-connect', rejected: false, after: { kind: 'linear-search' } }),
+          (e) => (errText(e) === LINEAR_REJECTED ? setModal({ kind: 'linear-connect', rejected: true, after: { kind: 'linear-search' } }) : say(errText(e), true)),
+        )
       case 'terminal':
         return need((w) => api.OpenInTerminal(w.dir).then(() => say(`opened ${w.name} in terminal`), (e) => say(errText(e), true)))
       case 'close':
@@ -731,6 +746,7 @@ export default function App() {
         <SettingsForm
           snap={snap}
           config={modal.config}
+          onLinearConnect={() => setModal({ kind: 'linear-connect', rejected: false, after: null })}
           onCancel={() => setModal(null)}
           onDone={() => {
             setModal(null)
@@ -750,18 +766,34 @@ export default function App() {
         />
       )}
       {modal?.kind === 'help' && <Help snap={snap} close={() => setModal(null)} />}
+      {modal?.kind === 'linear-connect' && <ConnectDialog rejected={modal.rejected} onCancel={() => setModal(null)} onDone={() => setModal(modal.after)} />}
+      {modal?.kind === 'linear-search' && snap && (
+        <SearchPalette
+          snap={snap}
+          onClose={() => setModal(null)}
+          onGoTo={(dir) => {
+            setModal(null)
+            openWs(dir)
+          }}
+          onPick={(ticket) => setModal({ kind: 'linear-start', ticket })}
+          onNeedConnect={(rejected) => setModal({ kind: 'linear-connect', rejected, after: { kind: 'linear-search' } })}
+        />
+      )}
+      {modal?.kind === 'linear-start' && snap && (
+        <StartWork
+          snap={snap}
+          ticket={modal.ticket}
+          current={target()?.repoPath ?? ''}
+          onCancel={() => setModal(null)}
+          onDone={(dir, n) => {
+            setModal(null)
+            say(n > 1 ? `started work in ${n} repos` : 'started work')
+            openWs(dir)
+          }}
+        />
+      )}
     </div>
   )
-}
-
-// keepFocus returns focus to a dialog when something outside it takes focus
-// (a pane mounting, a placeholder button), so its keys keep working.
-const keepFocus = (e: React.FocusEvent<HTMLElement>) => {
-  const el = e.currentTarget
-  if (el.contains(e.relatedTarget as Node | null)) return
-  requestAnimationFrame(() => {
-    if (el.isConnected && !el.contains(document.activeElement)) (el.querySelector('input') ?? el).focus()
-  })
 }
 
 function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
@@ -983,8 +1015,8 @@ const TERMINALS = navigator.userAgent.includes('Mac')
 // SettingsForm edits one of the window's config files: its window settings and
 // each [[repo]]'s. The rest of the file (a repo's path, [[workspace]]s) saves
 // back as it was, but not its comments. The window applies a save at once.
-function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () => void; onCancel: () => void }) {
-  const { snap, onDone, onCancel } = props
+function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () => void; onCancel: () => void; onLinearConnect: () => void }) {
+  const { snap, onDone, onCancel, onLinearConnect } = props
   const [path, setPath] = useState(props.config)
   const [cfg, setCfg] = useState<main.Config | null>(null)
   const [version, setVersion] = useState('')
@@ -1142,6 +1174,8 @@ function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () =
               ))}
             </>
           )}
+          <h3>Linear</h3>
+          <LinearAccountRow onConnect={onLinearConnect} />
           {err && <p className="err">{err}</p>}
           <div className="buttons">
             <button type="button" onClick={onCancel}>

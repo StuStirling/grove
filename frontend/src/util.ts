@@ -25,3 +25,13 @@ export function startDrag(e: React.PointerEvent, move: (ev: PointerEvent) => voi
   target.addEventListener('pointerup', up)
   target.addEventListener('pointercancel', up)
 }
+
+// keepFocus returns focus to a dialog when something outside it takes focus
+// (a pane mounting, a placeholder button), so its keys keep working.
+export const keepFocus = (e: React.FocusEvent<HTMLElement>) => {
+  const el = e.currentTarget
+  if (el.contains(e.relatedTarget as Node | null)) return
+  requestAnimationFrame(() => {
+    if (el.isConnected && !el.contains(document.activeElement)) (el.querySelector('input') ?? el).focus()
+  })
+}
