@@ -153,3 +153,25 @@ func TestLinearErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestLinearAccount(t *testing.T) {
+	// A cached key skips the keychain; the viewer call decides the rest.
+	for _, c := range []struct {
+		code      int
+		body      string
+		connected bool
+		name      string
+		err       error
+	}{
+		{200, `{"data":{"viewer":{"name":"Stu"}}}`, true, "Stu", nil},
+		{401, `{}`, false, "", errLinearAuth},
+		{502, `bad gateway`, true, "", nil}, // offline or Linear down: still connected
+	} {
+		linearServer(t, func(string, map[string]any) (int, string) { return c.code, c.body })
+		a := &App{linKey: "lin_test"}
+		acc, err := a.LinearAccount()
+		if acc.Connected != c.connected || acc.Name != c.name || !errors.Is(err, c.err) {
+			t.Errorf("%d: %+v, %v", c.code, acc, err)
+		}
+	}
+}

@@ -241,3 +241,116 @@ func linearProject(ctx context.Context, key, id string) (LinearProject, error) {
 	}
 	return toProject(data.Project), nil
 }
+
+// ---- bound to the frontend ----
+
+// LinearAccount is whether a Linear key is saved, and whose it is.
+type LinearAccount struct {
+	Connected bool   `json:"connected"`
+	Name      string `json:"name"`
+}
+
+// linearKey is the saved key, read from the keychain on first use. The key
+// stays in Go: the frontend only ever learns the account's name.
+func (a *App) linearKey() (string, error) {
+	a.mu.Lock()
+	key := a.linKey
+	a.mu.Unlock()
+	if key != "" {
+		return key, nil
+	}
+	key, err := secretGet("linear")
+	if err != nil {
+		return "", err
+	}
+	if key == "" {
+		return "", errLinearNoKey
+	}
+	a.mu.Lock()
+	a.linKey = key
+	a.mu.Unlock()
+	return key, nil
+}
+
+// LinearAccount reports the saved key's account. Only a rejected key counts as
+// disconnected: offline, ⌘L still opens the palette, which shows the error.
+func (a *App) LinearAccount() (LinearAccount, error) {
+	key, err := a.linearKey()
+	if errors.Is(err, errLinearNoKey) {
+		return LinearAccount{}, nil
+	}
+	if err != nil {
+		return LinearAccount{}, err
+	}
+	a.mu.Lock()
+	name := a.linName
+	a.mu.Unlock()
+	if name != "" {
+		return LinearAccount{Connected: true, Name: name}, nil
+	}
+	name, err = linearViewer(context.Background(), key)
+	if errors.Is(err, errLinearAuth) {
+		return LinearAccount{}, err
+	}
+	if err != nil {
+		return LinearAccount{Connected: true}, nil
+	}
+	a.mu.Lock()
+	a.linName = name
+	a.mu.Unlock()
+	return LinearAccount{Connected: true, Name: name}, nil
+}
+
+// LinearConnect checks a personal API key with Linear, then saves it.
+func (a *App) LinearConnect(key string) (LinearAccount, error) {
+	key = strings.TrimSpace(key)
+	name, err := linearViewer(context.Background(), key)
+	if err != nil {
+		return LinearAccount{}, err
+	}
+	if err := secretSet("linear", key); err != nil {
+		return LinearAccount{}, err
+	}
+	a.mu.Lock()
+	a.linKey, a.linName = key, name
+	a.mu.Unlock()
+	return LinearAccount{Connected: true, Name: name}, nil
+}
+
+// LinearDisconnect forgets the saved key.
+func (a *App) LinearDisconnect() error {
+	if err := secretDelete("linear"); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.linKey, a.linName = "", ""
+	a.mu.Unlock()
+	return nil
+}
+
+// LinearSearch finds issues and projects; "" lists the viewer's own work.
+func (a *App) LinearSearch(term string) (LinearResults, error) {
+	key, err := a.linearKey()
+	if err != nil {
+		return LinearResults{}, err
+	}
+	return linearSearch(context.Background(), key, term)
+}
+
+// GetLinearIssue fetches one issue by identifier.
+func (a *App) GetLinearIssue(id string) (LinearIssue, error) {
+	key, err := a.linearKey()
+	if err != nil {
+		return LinearIssue{}, err
+	}
+	return linearIssue(context.Background(), key, id)
+}
+
+// GetLinearProject fetches one project with its content and issues.
+func (a *App) GetLinearProject(id string) (LinearProject, error) {
+	key, err := a.linearKey()
+	if err != nil {
+		return LinearProject{}, err
+	}
+	return linearProject(context.Background(), key, id)
+}

@@ -34,8 +34,32 @@ export function DeleteBranch(arg1, arg2, arg3) {
   return window['go']['main']['App']['DeleteBranch'](arg1, arg2, arg3);
 }
 
+export function GetLinearIssue(arg1) {
+  return window['go']['main']['App']['GetLinearIssue'](arg1);
+}
+
+export function GetLinearProject(arg1) {
+  return window['go']['main']['App']['GetLinearProject'](arg1);
+}
+
 export function InitRepo(arg1, arg2, arg3) {
   return window['go']['main']['App']['InitRepo'](arg1, arg2, arg3);
+}
+
+export function LinearAccount() {
+  return window['go']['main']['App']['LinearAccount']();
+}
+
+export function LinearConnect(arg1) {
+  return window['go']['main']['App']['LinearConnect'](arg1);
+}
+
+export function LinearDisconnect() {
+  return window['go']['main']['App']['LinearDisconnect']();
+}
+
+export function LinearSearch(arg1) {
+  return window['go']['main']['App']['LinearSearch'](arg1);
 }
 
 export function NewTab(arg1, arg2) {

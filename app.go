@@ -53,6 +53,8 @@ type App struct {
 	initial   string   // workspace (name or dir) to select on first load
 	setup     bool     // queue initial's setup command: `grove new` made it
 	menuNames []string // Go menu labels, to rebuild it on change
+	linKey    string   // the Linear API key, read from the keychain once
+	linName   string   // the Linear account's name, once known
 }
 
 // addedRepo is another repo's config shown in this window. The window serves

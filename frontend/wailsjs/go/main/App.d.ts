@@ -18,7 +18,19 @@ export function DefaultBase(arg1:string):Promise<string>;
 
 export function DeleteBranch(arg1:string,arg2:string,arg3:boolean):Promise<main.BranchResult>;
 
+export function GetLinearIssue(arg1:string):Promise<main.LinearIssue>;
+
+export function GetLinearProject(arg1:string):Promise<main.LinearProject>;
+
 export function InitRepo(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function LinearAccount():Promise<main.LinearAccount>;
+
+export function LinearConnect(arg1:string):Promise<main.LinearAccount>;
+
+export function LinearDisconnect():Promise<void>;
+
+export function LinearSearch(arg1:string):Promise<main.LinearResults>;
 
 export function NewTab(arg1:string,arg2:string):Promise<main.Pane>;
 
