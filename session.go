@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,6 +33,8 @@ type pane struct {
 	ws    string   // workspace name, for GROVE_WORKSPACE
 	dir   string   // worktree dir: the workspace's key
 	setup string   // typed into the pane once it starts (the repo's setup command)
+	args  string   // appended to Cmd when the process starts: a seeded Claude's flags and prompt
+	env   []string // added to the pane's environment when it starts
 	f     *os.File // pty master; nil until started
 	cmd   *exec.Cmd
 	done  chan struct{} // closed once the process has exited and been reaped
@@ -105,6 +108,60 @@ func (s *sessions) newTab(ws Workspace, cmd string) Pane {
 	return p.Pane
 }
 
+// seed opens a workspace with a seeded Claude: args and env go on its first
+// Claude pane before it starts, so Pane.Cmd (the tab's name and Claude marks)
+// stays as configured. With no Claude pane, or the workspace already open, the
+// seed gets a Claude tab of its own.
+func (s *sessions) seed(ws Workspace, setup, args string, env []string) []Pane {
+	s.mu.Lock()
+	ps, open := s.open[ws.Dir]
+	if !open {
+		cmds := ws.Panes
+		if len(cmds) == 0 {
+			cmds = []string{""}
+		}
+		ps = make([]*pane, len(cmds))
+		for i, c := range cmds {
+			ps[i] = s.newPane(ws.Name, ws.Dir, c)
+		}
+		if strings.TrimSpace(setup) != "" {
+			ps[shellPaneIndex(cmds)].setup = setup
+		}
+	}
+	i := -1
+	if !open {
+		i = slices.IndexFunc(ps, func(p *pane) bool { return p.Kind == "claude" })
+	}
+	if i < 0 {
+		ps = append(ps, s.newPane(ws.Name, ws.Dir, claudeCmd(ws)))
+		i = len(ps) - 1
+	}
+	ps[i].args, ps[i].env = args, env
+	s.open[ws.Dir] = ps
+	s.mu.Unlock()
+	s.changed()
+	return publicPanes(ps)
+}
+
+// claudeCmd is the workspace's first Claude entry in panes, flags and all, else
+// plain claude.
+func claudeCmd(ws Workspace) string {
+	if i := slices.IndexFunc(ws.Panes, func(c string) bool { return paneKind(c) == "claude" }); i >= 0 {
+		return ws.Panes[i]
+	}
+	return "claude"
+}
+
+// seedArgs are the arguments that start Claude in plan mode on prompt, with
+// access to addDirs, quoted for the pane's shell.
+func seedArgs(prompt string, addDirs []string) string {
+	args := []string{"--permission-mode", "plan"}
+	for _, d := range addDirs {
+		args = append(args, "--add-dir", shellQuote(d))
+	}
+	return strings.Join(append(args, shellQuote(prompt)), " ")
+}
+
 // closeTab stops one pane, as closing a terminal tab does. The workspace closes
 // with its last pane.
 func (s *sessions) closeTab(id string) error {
@@ -141,9 +198,13 @@ func (s *sessions) start(id string, cols, rows int) error {
 	if p.f != nil {
 		return pty.Setsize(p.f, size)
 	}
-	c := paneCommand(p.Cmd)
+	cmd := p.Cmd
+	if p.args != "" {
+		cmd += " " + p.args
+	}
+	c := paneCommand(cmd)
 	c.Dir = p.dir
-	c.Env = paneEnv(p.ws, p.ID, s.sock)
+	c.Env = append(paneEnv(p.ws, p.ID, s.sock), p.env...)
 	f, err := pty.StartWithSize(c, size)
 	if err != nil {
 		return fmt.Errorf("starting %q: %w", p.Cmd, err)

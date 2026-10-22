@@ -540,10 +540,7 @@ func (a *App) NewTab(dir, kind string) (Pane, error) {
 	cmd := ""
 	switch kind {
 	case "claude":
-		cmd = "claude"
-		if i := slices.IndexFunc(ws.Panes, func(c string) bool { return paneKind(c) == "claude" }); i >= 0 {
-			cmd = ws.Panes[i]
-		}
+		cmd = claudeCmd(ws)
 	case "shell":
 	default:
 		return Pane{}, fmt.Errorf("unknown tab kind %q", kind)
