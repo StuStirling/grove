@@ -38,7 +38,7 @@ A dialog in the style of grove's others, opened by ⌘L.
 - **Empty query:** "Assigned to you" (issues assigned to the viewer whose state type isn't completed or canceled, most recently updated first, up to 50) and "Your projects" (projects the viewer leads or is a member of, status not completed or canceled, up to 20).
 - **Typed query:** "Issues" and "Projects" from `searchIssues` and `searchProjects`, 20 and 10 results, after a 400ms pause in typing. Linear rate-limits each search to 30 requests a minute. A query matching `^[A-Za-z]+-\d+$` is fetched with `issue(id:)` instead, which is not search-limited.
 - **Scope chips:** All, Issues, Projects.
-- **Rows:** issues show a state glyph, identifier, title, project (or team), state name. Projects show name, issue counts and target date, status.
+- **Rows:** issues show a state glyph, identifier, title, project (or team), state name. Projects show name, `% done` (Linear's `progress`) and target date, status. Counting a project's issues would mean fetching them for every row.
 - **Existing work:** an issue whose `branchName` is checked out in a worktree of any window repo shows "worktree in <repo>", and ↩ opens that worktree instead of starting work.
 - **Keys:** ↑↓ select, ↩ start work (or go to worktree), ⌘↩ open in Linear, Esc close.
 
@@ -154,16 +154,16 @@ The key is read once per run and held in memory in Go. It is never sent to the f
 
 `pane` gets two unexported fields, `args string` (appended to the command when the process starts) and `env []string` (appended to `paneEnv`). `sessions.seed(ws, setup, args, env)` opens the workspace like `ensure` and sets them on its first Claude pane, or, when the workspace is already open, adds a new Claude tab carrying them. Seeding happens before the frontend first sizes the pane, so the process always starts seeded.
 
-### Bindings (`app.go`)
+### Bindings (`linear.go`, `start.go`)
 
 | Method | Returns |
 |---|---|
 | `LinearAccount()` | `{connected, name}` |
 | `LinearConnect(key)` | `{connected, name}`, or `errLinearAuth` |
 | `LinearDisconnect()` | |
-| `LinearSearch(term)` | `{issues, projects}`; `term == ""` is my work. Each issue has `worktree` (a dir) when its branch is checked out in the window |
-| `LinearTicket(kind, id)` | The full issue or project, with the suggested branch and name |
-| `PlanRepo(repoPath, branch, name)` | `{action, path, reason}` |
+| `LinearSearch(term)` | `{issues, projects}`; `term == ""` is my work. The frontend marks issues whose branch is checked out, from the snapshot it already has |
+| `GetLinearIssue(id)`, `GetLinearProject(id)` | The full issue, or the project with its issues. The frontend suggests the branch and name (`start.ts`) |
+| `PlanRepo(repoPath, branch, name)` | `{action, path, reason}`. Also a conflict for a branch name git rejects. The frontend adds a conflict when two ticked repos plan the same folder |
 | `StartRepo(repoPath, branch, name, seed)` | The workspace dir. `seed` is `{prompt, addDirs}` for the lead and empty otherwise. Opens the workspace with `setup` queued (not for reuse) |
 
 Menu: **File ▸ Start Work from Linear… ⌘L**. The ⌘/ help lists it.
