@@ -38,7 +38,7 @@ ENG-412                 ⋯
  ○  backend             ⌘3
     f/eng-413-avatar-cdn
 ANDROID                 ⋯
-    main                ⌘4
+    android [main]      ⌘4
     develop
 ```
 
@@ -50,7 +50,7 @@ ANDROID                 ⋯
   - **Add to <project>**, one item per current project except the row's own. `Menu` has no submenus, and a window rarely has more than a few projects, so they are listed inline.
   - **New project…**, which opens a small dialog with a name field, in the style of grove's other dialogs. Esc cancels; an empty name, or one that is already a project, keeps Create disabled.
   - **Remove from project**, only on rows in one. It sets the row's override to `null`.
-
+- **Main checkout:** each repo's main checkout gets a `main` tag after its name, styled like the `added` tag on repo headers (`--muted` text, a `--border-strong` border, 10px). It shows wherever the row does, a project group or a filtered list included. A main checkout can still be added to a project by override; it just never joins one by folder name.
 
 ## ⌘1–9
 
@@ -64,17 +64,18 @@ All frontend. No Go or binding changes.
   - `type Overrides = Record<string, string | null>`
   - `membership(all, overrides): Map<string, string>`, dir to project name.
   - `prune(overrides, all): Overrides`.
+  - `mains(all): Set<string>`, the dirs of each repo's main checkout (its first row in the snapshot). Used by `membership` and by the `main` tag.
   - `loadOverrides()` / `saveOverrides()`, wrapping `localStorage` in try/catch like the other keys.
 - **`repos.ts`:** `Group` becomes `{ repo: RepoInfo | null; project?: string; rows }`. `groups()` takes the membership map and builds project groups first. `matches()` also takes the row's project name. It exports `numbered(...)` for the ⌘1–9 order.
 - **`App.tsx`:** holds the overrides state, prunes it on each snapshot, passes membership into `groups()`, switches ⌘1–9 to `numbered`, and handles the New project… dialog.
-- **`Sidebar.tsx`:** project headers and their menu, row names inside projects, the two row-menu items, numbering from `numbered`.
-- **`style.css`:** the project header colour.
+- **`Sidebar.tsx`:** project headers and their menu, row names inside projects, the row-menu items, the `main` tag, numbering from `numbered`.
+- **`style.css`:** the project header colour and the `main` tag.
 
 ## Testing
 
 - **`projects.test.ts`:**
   - same folder in two repos is a project; in one repo is not
-  - the main checkout is excluded
+  - the main checkout is excluded, and `mains` picks each repo's first row
   - an override adds a worktree with a different folder name
   - a `null` override removes a derived member, and a derived project left with one repo dissolves
   - a one-member override project stays
