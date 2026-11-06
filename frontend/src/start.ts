@@ -9,8 +9,9 @@ export const REPOS_KEY = 'grove.linearRepos' // repo paths ticked the last time 
 
 export type Ticket = { kind: 'issue'; issue: main.LinearIssue } | { kind: 'project'; project: main.LinearProject }
 
-// Target is a repo's display name and its worktree dir, as the prompt names them.
-export type Target = { repo: string; path: string }
+// Target is a repo as the prompt names it: display name, worktree dir, branch,
+// and the project issue it works on, if any.
+export type Target = { repo: string; path: string; branch: string; issue?: string }
 
 const DONE = ['completed', 'canceled']
 const DESCRIPTION_MAX = 600 // per issue in a project prompt: enough to plan from, not a wall
@@ -29,18 +30,34 @@ export function nextLead(lead: string, ticked: string[]): string {
   return ticked.includes(lead) ? lead : (ticked[0] ?? '')
 }
 
-export function slug(s: string): string {
+export function slug(s: string, max = 60): string {
   const cut = (v: string) => v.replace(/^-+|-+$/g, '')
-  return cut(cut(s.toLowerCase().replace(/[^a-z0-9]+/g, '-')).slice(0, 60)) || 'work'
+  return cut(cut(s.toLowerCase().replace(/[^a-z0-9]+/g, '-')).slice(0, max)) || 'work'
 }
 
-// suggestBranch is an issue's Linear branch. A project has none, so it borrows
-// the prefix Linear gives the viewer's issue branches ("stu/eng-1-x" → "stu").
-export function suggestBranch(t: Ticket): string {
-  if (t.kind === 'issue') return t.issue.branchName
-  const named = (t.project.issues ?? []).find((i) => i.branchName.includes('/'))
-  const name = slug(t.project.name)
-  return named ? `${named.branchName.split('/')[0]}/${name}` : name
+// issueBranch is the team's branch format: b/ for a bug, else f/, then the
+// identifier and a short title slug ("f/MON-4232-buy-the-same-plan").
+export function issueBranch(i: main.LinearIssue): string {
+  const bug = (i.labels ?? []).some((l) => /^bug\b/i.test(l))
+  return `${bug ? 'b' : 'f'}/${i.id}-${slug(i.title, 40)}`
+}
+
+type RepoLabels = Pick<main.RepoInfo, 'name' | 'labels'>
+
+// repoIssue is the issue a repo works on: an issue ticket's own, or a project's
+// first open issue carrying one of the repo's Linear labels (its name by default).
+// ponytail: first match wins; several open Android issues in one project need the branch edited.
+export function repoIssue(t: Ticket, repo: RepoLabels): main.LinearIssue | undefined {
+  if (t.kind === 'issue') return t.issue
+  const want = (repo.labels?.length ? repo.labels : [repo.name]).map((l) => l.toLowerCase())
+  return (t.project.issues ?? []).find((i) => !DONE.includes(i.stateType) && (i.labels ?? []).some((l) => want.includes(l.toLowerCase())))
+}
+
+// suggestBranch is a repo's branch: its issue's, else one named for the project.
+export function suggestBranch(t: Ticket, repo: RepoLabels): string {
+  const i = repoIssue(t, repo)
+  if (i) return issueBranch(i)
+  return t.kind === 'project' ? `f/${slug(t.project.name, 40)}` : ''
 }
 
 export function suggestName(t: Ticket): string {
@@ -48,15 +65,18 @@ export function suggestName(t: Ticket): string {
 }
 
 // buildPrompt is the lead Claude's first prompt; targets[0] is the lead.
-export function buildPrompt(t: Ticket, targets: Target[], branch: string): string {
+export function buildPrompt(t: Ticket, targets: Target[]): string {
   const [lead, ...rest] = targets
+  const shared = targets.every((r) => r.branch === lead?.branch)
+  const line = (r: Target, here = '') => `- ${r.repo}${here}: ${r.path}` + (shared ? '' : ` on ${r.branch}`) + (!shared && r.issue ? ` (${r.issue})` : '')
   const where =
     rest.length === 0
-      ? `You're in the ${lead?.repo} worktree on branch ${branch}.`
+      ? `You're in the ${lead?.repo} worktree on branch ${lead?.branch}.`
       : [
-          `You're in the ${lead.repo} worktree. The work spans ${targets.length} repos, each with a worktree on branch ${branch}:`,
-          `- ${lead.repo} (here): ${lead.path}`,
-          ...rest.map((r) => `- ${r.repo}: ${r.path}`),
+          `You're in the ${lead.repo} worktree. The work spans ${targets.length} repos, ` +
+            (shared ? `each with a worktree on branch ${lead.branch}:` : 'each with its own worktree and branch:'),
+          line(lead, ' (here)'),
+          ...rest.map((r) => line(r)),
         ].join('\n')
   const sections =
     t.kind === 'issue'

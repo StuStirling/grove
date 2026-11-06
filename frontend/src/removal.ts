@@ -140,3 +140,11 @@ export function withRemovals(list: main.WorkspaceInfo[], rs: Removals): main.Wor
   }
   return out
 }
+
+// siblings are the worktrees of the same folder name in the window's other repos:
+// the rest of work started across repos, which share the worktree name.
+export function siblings(ws: main.WorkspaceInfo, all: main.WorkspaceInfo[]): main.WorkspaceInfo[] {
+  const base = (dir: string) => dir.replace(/\/+$/, '').split('/').pop()
+  if (!ws.repoPath) return []
+  return all.filter((w) => w.repoPath && w.repoPath !== ws.repoPath && base(w.dir) === base(ws.dir))
+}

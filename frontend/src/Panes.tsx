@@ -5,14 +5,28 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import '@xterm/xterm/css/xterm.css'
 import { OpenURL, Size, Write } from '../wailsjs/go/main/App'
-import { EventsOn } from '../wailsjs/runtime/runtime'
+import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime'
 import type { main } from '../wailsjs/go/models'
 import { activate, closePane, moveToOther, place, type Layout } from './layout'
 import { Menu } from './Menu'
-import { key, startDrag } from './util'
+import { key, shellQuote, startDrag } from './util'
 
 // Live xterm instances by pane id, so the app can move focus between panes.
 export const terms = new Map<string, Terminal>()
+
+// Files dropped from Finder type their quoted paths into the terminal under the
+// cursor, as Terminal.app does; Claude Code attaches a typed image path.
+let dropping = false
+function listenForFileDrops() {
+  if (dropping) return
+  dropping = true
+  OnFileDrop((x, y, paths) => {
+    const id = (document.elementFromPoint(x, y)?.closest('[data-pane]') as HTMLElement | null)?.dataset.pane
+    if (!id || !paths?.length) return
+    Write(id, paths.map(shellQuote).join(' ') + ' ')
+    terms.get(id)?.focus()
+  }, false)
+}
 
 const theme = {
   background: '#0e1116', foreground: '#d7dde5', cursor: '#7ee787', cursorAccent: '#0e1116',
@@ -41,6 +55,7 @@ function TermPane({ pane, font, dim, onFocus }: { pane: main.Pane; font: Font; d
   focusRef.current = onFocus
 
   useEffect(() => {
+    listenForFileDrops()
     const el = ref.current!
     const term = new Terminal({
       fontFamily: font.family, fontSize: font.size, theme,
@@ -65,6 +80,14 @@ function TermPane({ pane, font, dim, onFocus }: { pane: main.Pane; font: Font; d
       if (e.key === 'Backspace' && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         if (e.type === 'keydown') Write(pane.id, '\x15')
         e.preventDefault() // handled: not the menu's Delete Worktree too
+        return false
+      }
+      // ⌥← / ⌥→ move by word as ESC b / ESC f (readline/zle word motion), as Mac
+      // terminals send it; xterm.js would send ESC[1;3D, which zsh inserts as text.
+      // ⌥⌫ deletes the previous word as ESC DEL.
+      const word = { ArrowLeft: '\x1bb', ArrowRight: '\x1bf', Backspace: '\x1b\x7f' }[e.key]
+      if (word && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+        if (e.type === 'keydown') Write(pane.id, word)
         return false
       }
       return true
@@ -121,7 +144,7 @@ function TermPane({ pane, font, dim, onFocus }: { pane: main.Pane; font: Font; d
     term.options.theme = { ...theme, background }
   }, [dim, pane.id])
 
-  return <div className="term" ref={ref} />
+  return <div className="term" data-pane={pane.id} ref={ref} />
 }
 
 // WorkspaceHeader names the worktree and its branch in full: long ones wrap

@@ -159,3 +159,14 @@ test("a failed removal goes once its worktree has; one in flight is left alone",
   const removing = rm.start({}, ws('a'), [])
   assert.equal(rm.sync(removing, []), removing)
 })
+
+test("siblings: the same folder name in other repos, never the repo's own or a manual workspace", () => {
+  const at = (dir: string, repoPath: string) => ({ name: dir, branch: '', dir, repo: '', repoPath }) as main.WorkspaceInfo
+  const android = at('/w/android/standby', '/android')
+  const all = [android, at('/w/ios/standby', '/ios'), at('/w/api/standby/', '/api'), at('/w/android2/standby', '/android'), at('/w/ios/other', '/ios'), at('/w/x/standby', '')]
+  assert.deepEqual(
+    rm.siblings(android, all).map((w) => w.dir),
+    ['/w/ios/standby', '/w/api/standby/'],
+  )
+  assert.deepEqual(rm.siblings(at('/w/x/standby', ''), all), [])
+})

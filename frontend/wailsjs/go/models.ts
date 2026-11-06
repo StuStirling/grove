@@ -89,6 +89,7 @@ export namespace main {
 	    worktreeRoot: string;
 	    base: string;
 	    setup: string;
+	    linearLabels: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Repo(source);
@@ -102,6 +103,7 @@ export namespace main {
 	        this.worktreeRoot = source["worktreeRoot"];
 	        this.base = source["base"];
 	        this.setup = source["setup"];
+	        this.linearLabels = source["linearLabels"];
 	    }
 	}
 	export class Config {
@@ -166,6 +168,7 @@ export namespace main {
 	    stateType: string;
 	    team: string;
 	    project: string;
+	    labels: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new LinearIssue(source);
@@ -182,6 +185,7 @@ export namespace main {
 	        this.stateType = source["stateType"];
 	        this.team = source["team"];
 	        this.project = source["project"];
+	        this.labels = source["labels"];
 	    }
 	}
 	export class LinearProject {
@@ -310,6 +314,7 @@ export namespace main {
 	    path: string;
 	    added: boolean;
 	    config: string;
+	    labels: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new RepoInfo(source);
@@ -321,6 +326,7 @@ export namespace main {
 	        this.path = source["path"];
 	        this.added = source["added"];
 	        this.config = source["config"];
+	        this.labels = source["labels"];
 	    }
 	}
 	

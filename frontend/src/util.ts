@@ -35,3 +35,6 @@ export const keepFocus = (e: React.FocusEvent<HTMLElement>) => {
     if (el.isConnected && !el.contains(document.activeElement)) (el.querySelector('input') ?? el).focus()
   })
 }
+
+// shellQuote single-quotes a path for the shell, as Terminal.app types a dropped file.
+export const shellQuote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'"

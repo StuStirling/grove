@@ -37,9 +37,9 @@ func linearServer(t *testing.T, handle func(query string, vars map[string]any) (
 	t.Cleanup(func() { linearEndpoint = old })
 }
 
-const issueJSON = `{"identifier":"ENG-412","title":"Let people snooze","description":"Pause pushes","url":"https://linear.app/acme/issue/ENG-412","branchName":"stu/eng-412-let-people-snooze","state":{"name":"In Progress","type":"started"},"team":{"key":"ENG"},"project":{"name":"Notification controls"}}`
+const issueJSON = `{"identifier":"ENG-412","title":"Let people snooze","description":"Pause pushes","url":"https://linear.app/acme/issue/ENG-412","branchName":"stu/eng-412-let-people-snooze","state":{"name":"In Progress","type":"started"},"team":{"key":"ENG"},"project":{"name":"Notification controls"},"labels":{"nodes":[{"name":"Android"}]}}`
 
-var issue412 = LinearIssue{ID: "ENG-412", Title: "Let people snooze", Description: "Pause pushes", URL: "https://linear.app/acme/issue/ENG-412", BranchName: "stu/eng-412-let-people-snooze", State: "In Progress", StateType: "started", Team: "ENG", Project: "Notification controls"}
+var issue412 = LinearIssue{ID: "ENG-412", Title: "Let people snooze", Description: "Pause pushes", URL: "https://linear.app/acme/issue/ENG-412", BranchName: "stu/eng-412-let-people-snooze", State: "In Progress", StateType: "started", Team: "ENG", Project: "Notification controls", Labels: []string{"Android"}}
 
 const projectJSON = `{"id":"p1","name":"Notification controls","description":"Finer control","url":"https://linear.app/acme/project/nc","progress":0.43,"targetDate":"2026-11-14","status":{"name":"In Progress","type":"started"}}`
 
