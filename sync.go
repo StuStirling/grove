@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,4 +202,125 @@ func strategyFor(state string) string {
 		return ""
 	}
 	return "rebase"
+}
+
+// UpdateStep is one git command an update runs.
+type UpdateStep struct {
+	Kind  string `json:"kind"`  // "pull" (own upstream) | "base" | "ff" (pull --ff-only on the base branch)
+	Ref   string `json:"ref"`   // e.g. "origin/feat", "origin/main"
+	Count int    `json:"count"` // commits it brings in
+}
+
+// UpdatePlan is what updating a worktree from its base would do, shown before
+// anything changes.
+type UpdatePlan struct {
+	Branch   string       `json:"branch"`
+	Base     string       `json:"base"` // e.g. "origin/main"
+	Head     string       `json:"head"` // the SHA planned against
+	PR       PRInfo       `json:"pr"`
+	Strategy string       `json:"strategy"` // "rebase" | "merge" | "" (unknown: the user picks)
+	Steps    []UpdateStep `json:"steps"`
+	Push     string       `json:"push"` // pushKind, only when Steps is empty
+	Warnings []string     `json:"warnings"`
+	Refusal  string       `json:"refusal"`  // set: nothing else applies
+	Progress *InProgress  `json:"progress"` // set: stopped mid-operation
+}
+
+// stepsFor is what bringing branch (checked out at dir) up to date needs, from
+// the refs already fetched: its upstream's new commits first, so a stale copy
+// is never rebased and force-pushed over them, then the base's. The base
+// branch itself only fast-forwards from its upstream.
+func stepsFor(dir, branch, base string) []UpdateStep {
+	var steps []UpdateStep
+	up := upstreamName(dir)
+	_, baseBranch, _ := strings.Cut(base, "/")
+	if branch == baseBranch {
+		if n := count(dir, "HEAD..@{u}"); up != "" && n > 0 {
+			steps = append(steps, UpdateStep{"ff", up, n})
+		}
+		return steps
+	}
+	if n := count(dir, "HEAD..@{u}"); up != "" && n > 0 {
+		steps = append(steps, UpdateStep{"pull", up, n})
+	}
+	if n := count(dir, "HEAD.."+base); n > 0 {
+		steps = append(steps, UpdateStep{"base", base, n})
+	}
+	return steps
+}
+
+// upstreamName is the branch's pushed upstream, e.g. "origin/feat", or "".
+func upstreamName(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "@{u}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// planUpdate works out how to bring branch, checked out at dir, up to date
+// with base. It fetches, and asks gh about the PR, but changes nothing else.
+func planUpdate(dir, branch, base string) UpdatePlan {
+	p := UpdatePlan{Branch: branch, Base: base}
+	if p.Progress = inProgress(dir, branch); p.Progress != nil {
+		return p
+	}
+	if branch == "" {
+		p.Refusal = "Not on a branch"
+		return p
+	}
+	changes, _ := worktreeChanges(dir)
+	for _, c := range changes {
+		if !strings.HasPrefix(c, "??") { // untracked files don't stop a rebase or merge
+			p.Refusal = "Commit or stash first"
+			return p
+		}
+	}
+	remotes := []string{upstreamRemote(dir, base)}
+	if r := gitLines(dir, "config", "branch."+branch+".remote"); len(r) == 1 && r[0] != remotes[0] {
+		remotes = append(remotes, r[0])
+	}
+	for _, r := range remotes {
+		if r == "" {
+			continue
+		}
+		if err := runGit(dir, "fetch", "-q", r); err != nil {
+			reason, _ := explain(err)
+			p.Warnings = append(p.Warnings, "Couldn't fetch "+r+": "+reason+"; using last known state")
+		}
+	}
+	if revParse(dir, base) == "" {
+		p.Refusal = "No " + base + " to update from"
+		return p
+	}
+	p.PR = parsePR(prView(dir, branch))
+	p.Strategy = strategyFor(p.PR.State)
+	if p.PR.State == "merged" {
+		p.Warnings = append(p.Warnings, "PR #"+strconv.Itoa(p.PR.Number)+" is already merged")
+	}
+	p.Head = revParse(dir, "HEAD")
+	if p.Steps = stepsFor(dir, branch, base); len(p.Steps) == 0 {
+		p.Push = pushKind(dir)
+	}
+	return p
+}
+
+// ---- bound to the frontend ----
+
+// worktreeAt resolves a worktree's dir to its branch and base.
+func (a *App) worktreeAt(dir string) (ws Workspace, base string, err error) {
+	ws, ok := a.find(dir)
+	if !ok {
+		return ws, "", fmt.Errorf("no workspace at %s", dir)
+	}
+	return ws, defaultBase(a.repoFor(ws)), nil
+}
+
+// PlanUpdate says what updating the worktree at dir from its base would do.
+func (a *App) PlanUpdate(dir string) (UpdatePlan, error) {
+	ws, base, err := a.worktreeAt(dir)
+	if err != nil {
+		return UpdatePlan{}, err
+	}
+	return planUpdate(ws.Dir, ws.Branch, base), nil
 }

@@ -177,3 +177,137 @@ func TestStrategyFor(t *testing.T) {
 		}
 	}
 }
+
+// stubPR makes prView answer with out/err for the rest of the test.
+func stubPR(t *testing.T, out string, err error) {
+	t.Helper()
+	old := prView
+	prView = func(string, string) ([]byte, error) { return []byte(out), err }
+	t.Cleanup(func() { prView = old })
+}
+
+const noPR = `no pull requests found for branch "feat"`
+
+// pushT pushes feat from dir and makes it track origin/feat.
+func pushT(t *testing.T, dir string) {
+	t.Helper()
+	gitT(t, dir, "push", "-q", "-u", "origin", "feat")
+}
+
+// otherCommitT commits file=body onto origin's feat from a second clone.
+func otherCommitT(t *testing.T, origin, file, body string) {
+	t.Helper()
+	other := filepath.Join(t.TempDir(), "other")
+	gitT(t, "", "clone", "-q", "-b", "feat", origin, other)
+	commitT(t, other, file, body)
+	gitT(t, other, "push", "-q", "origin", "feat")
+}
+
+func TestPlanRefusals(t *testing.T) {
+	stubPR(t, "", &gitError{"gh", noPR})
+
+	_, _, dir := conflictRepo(t)
+	_ = runGit(dir, "rebase", "origin/trunk")
+	p := planUpdate(dir, "feat", "origin/trunk")
+	if p.Progress == nil || p.Progress.Kind != "rebase" || len(p.Steps) != 0 {
+		t.Errorf("in progress: %+v", p)
+	}
+
+	_, _, dir = syncRepo(t)
+	writeT(t, filepath.Join(dir, "a.txt"), "changed")
+	if p := planUpdate(dir, "feat", "origin/trunk"); p.Refusal != "Commit or stash first" {
+		t.Errorf("dirty: %+v", p)
+	}
+	gitT(t, dir, "checkout", "-q", "a.txt")
+	writeT(t, filepath.Join(dir, "untracked.txt"), "x")
+	if p := planUpdate(dir, "feat", "origin/trunk"); p.Refusal != "" {
+		t.Errorf("untracked files alone refused: %+v", p)
+	}
+	gitT(t, dir, "checkout", "-q", "--detach")
+	if p := planUpdate(dir, "", "origin/trunk"); p.Refusal != "Not on a branch" {
+		t.Errorf("detached: %+v", p)
+	}
+
+	repo := gitRepo(t)
+	if p := planUpdate(repo, "trunk", "origin/trunk"); p.Refusal != "No origin/trunk to update from" {
+		t.Errorf("no base ref: %+v", p)
+	}
+}
+
+func TestPlanSteps(t *testing.T) {
+	stubPR(t, "", &gitError{"gh", noPR})
+	step := func(kind, ref string, n int) UpdateStep { return UpdateStep{Kind: kind, Ref: ref, Count: n} }
+
+	origin, clone, dir := syncRepo(t)
+	commitT(t, origin, "t1.txt", "t1") // not yet fetched: the plan fetches
+	p := planUpdate(dir, "feat", "origin/trunk")
+	if !slices.Equal(p.Steps, []UpdateStep{step("base", "origin/trunk", 1)}) || p.Head != headT(t, dir) {
+		t.Errorf("behind base: %+v", p)
+	}
+
+	pushT(t, dir)
+	otherCommitT(t, origin, "f1.txt", "f1")
+	p = planUpdate(dir, "feat", "origin/trunk")
+	if !slices.Equal(p.Steps, []UpdateStep{step("pull", "origin/feat", 1), step("base", "origin/trunk", 1)}) {
+		t.Errorf("remote ahead and behind base: %+v", p.Steps)
+	}
+
+	gitT(t, dir, "pull", "-q", "--no-rebase", "--no-edit")
+	gitT(t, dir, "merge", "-q", "--no-edit", "origin/trunk")
+	gitT(t, dir, "push", "-q")
+	if p := planUpdate(dir, "feat", "origin/trunk"); len(p.Steps) != 0 || p.Push != "" {
+		t.Errorf("up to date: %+v", p)
+	}
+	commitT(t, dir, "l.txt", "l")
+	if p := planUpdate(dir, "feat", "origin/trunk"); len(p.Steps) != 0 || p.Push != "push" {
+		t.Errorf("up to date with a local commit: %+v", p)
+	}
+
+	commitT(t, origin, "t2.txt", "t2")
+	// t1 and t2 are both unpulled on the clone's trunk.
+	if p := planUpdate(clone, "trunk", "origin/trunk"); !slices.Equal(p.Steps, []UpdateStep{step("ff", "origin/trunk", 2)}) {
+		t.Errorf("main checkout behind: %+v", p.Steps)
+	}
+}
+
+func TestPlanStrategy(t *testing.T) {
+	_, _, dir := syncRepo(t)
+	open := func(reviewer string) string {
+		rs := ""
+		if reviewer != "" {
+			rs = `{"author":{"login":"` + reviewer + `"}}`
+		}
+		return `{"number":7,"state":"OPEN","author":{"login":"stu"},"reviews":[` + rs + `]}`
+	}
+	stubPR(t, open("alice"), nil)
+	if p := planUpdate(dir, "feat", "origin/trunk"); p.Strategy != "merge" || p.PR.Reviewer != "alice" {
+		t.Errorf("reviewed: %+v", p)
+	}
+	stubPR(t, open(""), nil)
+	if p := planUpdate(dir, "feat", "origin/trunk"); p.Strategy != "rebase" {
+		t.Errorf("unreviewed: %+v", p)
+	}
+	stubPR(t, `{"number":7,"state":"MERGED","author":{"login":"stu"},"reviews":[]}`, nil)
+	if p := planUpdate(dir, "feat", "origin/trunk"); p.Strategy != "rebase" || len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "already merged") {
+		t.Errorf("merged: %+v", p)
+	}
+	stubPR(t, "", exec.ErrNotFound)
+	if p := planUpdate(dir, "feat", "origin/trunk"); p.Strategy != "" || p.PR.State != "unknown" {
+		t.Errorf("unknown: %+v", p)
+	}
+}
+
+func TestPlanFetchFailure(t *testing.T) {
+	stubPR(t, "", &gitError{"gh", noPR})
+	origin, clone, dir := syncRepo(t)
+	commitT(t, origin, "t1.txt", "t1")
+	gitT(t, clone, "fetch", "-q")
+	gitT(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing"))
+	p := planUpdate(dir, "feat", "origin/trunk")
+	if len(p.Warnings) != 1 || !strings.HasPrefix(p.Warnings[0], "Couldn't fetch origin") {
+		t.Errorf("warnings: %q", p.Warnings)
+	}
+	if len(p.Steps) != 1 || p.Steps[0].Kind != "base" {
+		t.Errorf("steps from known refs: %+v", p.Steps)
+	}
+}
