@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -124,5 +125,55 @@ func TestStateGitMark(t *testing.T) {
 	_ = runGit(dir, "rebase", "origin/trunk")
 	if g := a.State().Workspaces[0].Git; g != "rebase" {
 		t.Fatalf("mid rebase: %q", g)
+	}
+}
+
+func TestParsePR(t *testing.T) {
+	pr := func(state string, reviewers ...string) []byte {
+		var rs []string
+		for _, r := range reviewers {
+			rs = append(rs, `{"author":{"login":"`+r+`"}}`)
+		}
+		return []byte(`{"number":12,"state":"` + state + `","author":{"login":"stu"},"reviews":[` + strings.Join(rs, ",") + `]}`)
+	}
+	ghErr := func(out string) error { return &gitError{"gh pr view", out} }
+	for _, c := range []struct {
+		name     string
+		out      []byte
+		err      error
+		state    string
+		reviewer string
+	}{
+		{"open, no reviews", pr("OPEN"), nil, "unreviewed", ""},
+		{"open, reviewed by alice", pr("OPEN", "stu", "alice"), nil, "reviewed", "alice"},
+		{"open, only the author", pr("OPEN", "stu"), nil, "unreviewed", ""},
+		{"closed", pr("CLOSED", "alice"), nil, "none", ""},
+		{"merged", pr("MERGED", "alice"), nil, "merged", ""},
+		{"no PR", nil, ghErr(`no pull requests found for branch "feat"`), "none", ""},
+		{"no gh", nil, exec.ErrNotFound, "unknown", ""},
+		{"logged out", nil, ghErr("To get started with GitHub CLI, please run:  gh auth login"), "unknown", ""},
+		{"bad json", []byte("{"), nil, "unknown", ""},
+	} {
+		got := parsePR(c.out, c.err)
+		if got.State != c.state || got.Reviewer != c.reviewer {
+			t.Errorf("%s: %+v, want %s/%q", c.name, got, c.state, c.reviewer)
+		}
+		if got.State == "unknown" && got.Detail == "" {
+			t.Errorf("%s: unknown without a detail", c.name)
+		}
+		if (got.State == "unreviewed" || got.State == "reviewed" || got.State == "merged") && got.Number != 12 {
+			t.Errorf("%s: number %d", c.name, got.Number)
+		}
+	}
+	if d := parsePR(nil, exec.ErrNotFound).Detail; !strings.Contains(d, "gh") {
+		t.Errorf("missing gh detail: %q", d)
+	}
+}
+
+func TestStrategyFor(t *testing.T) {
+	for state, want := range map[string]string{"none": "rebase", "unreviewed": "rebase", "merged": "rebase", "reviewed": "merge", "unknown": ""} {
+		if got := strategyFor(state); got != want {
+			t.Errorf("%s: %q, want %q", state, got, want)
+		}
 	}
 }

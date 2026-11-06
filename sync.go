@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -116,4 +118,87 @@ func gitLines(dir string, args ...string) []string {
 		}
 	}
 	return lines
+}
+
+// PRInfo is what grove knows about the branch's pull request.
+type PRInfo struct {
+	Number   int    `json:"number"`
+	State    string `json:"state"`    // "none" | "unreviewed" | "reviewed" | "merged" | "unknown"
+	Reviewer string `json:"reviewer"` // first reviewer who isn't the author, when reviewed
+	Detail   string `json:"detail"`   // why the state is unknown
+}
+
+// prView asks gh about branch's PR from dir. A failure is a *gitError holding
+// gh's own words. A var so tests can stand in for gh.
+var prView = func(dir, branch string) ([]byte, error) {
+	c := exec.Command("gh", "pr", "view", branch, "--json", "number,state,author,reviews")
+	c.Dir = dir
+	var stderr strings.Builder
+	c.Stderr = &stderr
+	out, err := c.Output()
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, err
+		}
+		text := strings.TrimSpace(stderr.String())
+		if text == "" {
+			text = err.Error()
+		}
+		return nil, &gitError{"gh pr view " + branch, text}
+	}
+	return out, nil
+}
+
+// parsePR reads prView's result. A PR counts as reviewed once anyone but its
+// author has submitted a review of any kind; a closed one counts as none.
+func parsePR(out []byte, err error) PRInfo {
+	if errors.Is(err, exec.ErrNotFound) {
+		return PRInfo{State: "unknown", Detail: "gh is not installed"}
+	}
+	if err != nil {
+		// ponytail: matches gh's English message, as refusedAsDirty does git's.
+		if strings.Contains(err.Error(), "no pull requests found") {
+			return PRInfo{State: "none"}
+		}
+		reason, _ := explain(err)
+		return PRInfo{State: "unknown", Detail: reason}
+	}
+	var pr struct {
+		Number  int
+		State   string
+		Author  struct{ Login string }
+		Reviews []struct{ Author struct{ Login string } }
+	}
+	if err := json.Unmarshal(out, &pr); err != nil {
+		return PRInfo{State: "unknown", Detail: "couldn't read gh's answer: " + err.Error()}
+	}
+	info := PRInfo{Number: pr.Number}
+	switch pr.State {
+	case "MERGED":
+		info.State = "merged"
+	case "OPEN":
+		info.State = "unreviewed"
+		for _, r := range pr.Reviews {
+			if r.Author.Login != pr.Author.Login {
+				info.State, info.Reviewer = "reviewed", r.Author.Login
+				break
+			}
+		}
+	default:
+		return PRInfo{State: "none"}
+	}
+	return info
+}
+
+// strategyFor is how a branch with a PR in state is brought up to date: merge
+// once reviewed, so reviewers keep their place; rebase otherwise; "" when
+// unknown, for the user to pick.
+func strategyFor(state string) string {
+	switch state {
+	case "reviewed":
+		return "merge"
+	case "unknown":
+		return ""
+	}
+	return "rebase"
 }
