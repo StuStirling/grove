@@ -143,6 +143,31 @@ func (s *sessions) seed(ws Workspace, setup, args string, env []string) []Pane {
 	return publicPanes(ps)
 }
 
+// ask puts text to the workspace's Claude and returns that pane's id: typed
+// (not sent) into a running one; else as the start args and env of an unstarted
+// one; else, through seed, on a Claude pane of its own.
+func (s *sessions) ask(ws Workspace, args string, env []string, text string) string {
+	s.mu.Lock()
+	ps, open := s.open[ws.Dir]
+	if i := slices.IndexFunc(ps, func(p *pane) bool { return p.Kind == "claude" }); i >= 0 {
+		p := ps[i]
+		if f := p.f; f != nil {
+			s.mu.Unlock()
+			_, _ = f.WriteString(text)
+			return p.ID
+		}
+		p.args, p.env = args, env
+		s.mu.Unlock()
+		return p.ID
+	}
+	s.mu.Unlock()
+	seeded := s.seed(ws, "", args, env)
+	if open {
+		return seeded[len(seeded)-1].ID // seed appended a Claude tab
+	}
+	return seeded[slices.IndexFunc(seeded, func(p Pane) bool { return p.Kind == "claude" })].ID
+}
+
 // claudeCmd is the workspace's first Claude entry in panes, flags and all, else
 // plain claude.
 func claudeCmd(ws Workspace) string {

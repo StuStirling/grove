@@ -68,7 +68,21 @@ func inProgress(dir, branch string) *InProgress {
 	if kind == "" {
 		return nil
 	}
-	return &InProgress{Kind: kind, Files: gitLines(dir, "diff", "--name-only", "--diff-filter=U")}
+	files := gitLines(dir, "diff", "--name-only", "--diff-filter=U")
+	return &InProgress{Kind: kind, Files: files, Prompt: conflictPrompt(kind, branch, files)}
+}
+
+// conflictPrompt asks Claude to finish the stopped kind ("rebase" | "merge")
+// on branch.
+func conflictPrompt(kind, branch string, files []string) string {
+	what, next, repeat := "A rebase of "+branch, "`GIT_EDITOR=true git rebase --continue`", " Repeat if later commits conflict."
+	if kind == "merge" {
+		what, next, repeat = "A merge into "+branch, "`GIT_EDITOR=true git commit --no-edit`", ""
+	}
+	if len(files) == 0 {
+		return what + " stopped with no conflicted files listed. Check git status, fix what stopped it, and run " + next + "." + repeat + " Don't push."
+	}
+	return what + " stopped on conflicts in " + strings.Join(files, ", ") + ". Resolve them keeping the intent of both sides, stage the files, and run " + next + "." + repeat + " Don't push."
 }
 
 // pushKind is the push the branch checked out at dir needs: "upstream" when it
@@ -459,4 +473,21 @@ func (a *App) PushUpdate(dir, kind string) error {
 		return err
 	}
 	return pushUpdate(ws.Dir, ws.Branch, base, kind)
+}
+
+// AskClaude hands the stopped rebase or merge at dir to the worktree's Claude
+// and returns that pane's id. A running Claude gets the prompt typed but not
+// sent, for the user to check; otherwise Claude starts on it, since typing
+// into a pane that hasn't started is lost.
+func (a *App) AskClaude(dir string) (string, error) {
+	ws, ok := a.find(dir)
+	if !ok {
+		return "", fmt.Errorf("no workspace at %s", dir)
+	}
+	p := inProgress(ws.Dir, ws.Branch)
+	if p == nil {
+		return "", fmt.Errorf("%s isn't stopped in a rebase or merge", ws.Name)
+	}
+	args, env := `"$GROVE_SEED_PROMPT"`, []string{"GROVE_SEED_PROMPT=" + p.Prompt}
+	return a.sess.ask(ws, args, env, p.Prompt), nil
 }

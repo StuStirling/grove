@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -419,5 +421,71 @@ func TestPushStaleLease(t *testing.T) {
 	err := pushUpdate(dir, "feat", "origin/trunk", "force")
 	if err == nil || err.Error() != "Remote changed since you fetched. Run Update again." {
 		t.Errorf("%v", err)
+	}
+}
+
+func TestConflictPrompt(t *testing.T) {
+	for _, c := range []struct {
+		kind  string
+		files []string
+		want  string
+	}{
+		{"rebase", []string{"a.txt", "b.txt"}, "A rebase of feat stopped on conflicts in a.txt, b.txt. Resolve them keeping the intent of both sides, stage the files, and run `GIT_EDITOR=true git rebase --continue`. Repeat if later commits conflict. Don't push."},
+		{"merge", []string{"a.txt"}, "A merge into feat stopped on conflicts in a.txt. Resolve them keeping the intent of both sides, stage the files, and run `GIT_EDITOR=true git commit --no-edit`. Don't push."},
+		{"rebase", nil, "A rebase of feat stopped with no conflicted files listed. Check git status, fix what stopped it, and run `GIT_EDITOR=true git rebase --continue`. Repeat if later commits conflict. Don't push."},
+	} {
+		if got := conflictPrompt(c.kind, "feat", c.files); got != c.want {
+			t.Errorf("%s %v:\n got %q\nwant %q", c.kind, c.files, got, c.want)
+		}
+	}
+	_, _, dir := conflictRepo(t)
+	_ = runGit(dir, "rebase", "origin/trunk")
+	if p := inProgress(dir, "feat"); p.Prompt != conflictPrompt("rebase", "feat", []string{"a.txt"}) {
+		t.Errorf("inProgress prompt: %q", p.Prompt)
+	}
+}
+
+func TestAskClaude(t *testing.T) {
+	_, clone, dir := conflictRepo(t)
+	_ = runGit(dir, "rebase", "origin/trunk")
+	prompt := inProgress(dir, "feat").Prompt
+	ws := Workspace{Name: "feat", Dir: dir, Branch: "feat", RepoPath: clone, Panes: []string{"claude", ""}}
+	newApp := func() *App { return &App{ws: []Workspace{ws}, sess: newSessions("", func(string, ...any) {})} }
+	seeded := func(a *App, id string) bool {
+		p := a.sess.panes[id]
+		return p != nil && p.Kind == "claude" && strings.Contains(p.args, "GROVE_SEED_PROMPT") && slices.Contains(p.env, "GROVE_SEED_PROMPT="+prompt)
+	}
+
+	// Not open: its own Claude pane starts on the prompt.
+	a := newApp()
+	id, err := a.AskClaude(dir)
+	if err != nil || !seeded(a, id) || a.sess.panes[id].Cmd != "claude" {
+		t.Fatalf("not open: %q %v", id, err)
+	}
+
+	// Open, Claude pane not started yet: same.
+	a = newApp()
+	ps := a.sess.ensure(ws, "")
+	if id, err := a.AskClaude(dir); err != nil || id != ps[0].ID || !seeded(a, id) {
+		t.Fatalf("open, unstarted: %q %v", id, err)
+	}
+
+	// Open and running: typed in, not submitted.
+	a = newApp()
+	ps = a.sess.ensure(ws, "")
+	r, w, _ := os.Pipe()
+	a.sess.panes[ps[0].ID].f = w
+	if id, err := a.AskClaude(dir); err != nil || id != ps[0].ID {
+		t.Fatalf("running: %q %v", id, err)
+	}
+	w.Close()
+	if got, _ := io.ReadAll(r); string(got) != prompt {
+		t.Errorf("typed %q", got)
+	}
+
+	// Not mid-operation: nothing to ask.
+	gitT(t, dir, "rebase", "--abort")
+	if _, err := newApp().AskClaude(dir); err == nil {
+		t.Error("no operation: want an error")
 	}
 }
