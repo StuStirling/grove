@@ -1,24 +1,42 @@
 import type { main } from '../wailsjs/go/models'
+import { projectNames } from './projects.ts'
 
-// Group is one repo's rows in the sidebar, under its header. repo null holds the
-// manual [[workspace]] entries, last, under a plain heading.
-export type Group = { repo: main.RepoInfo | null; rows: main.WorkspaceInfo[] }
+// Group is one header's rows in the sidebar: a project's (project set, repo
+// null), a repo's, or, with neither, the manual [[workspace]] entries.
+export type Group = { repo: main.RepoInfo | null; project?: string; rows: main.WorkspaceInfo[] }
 
-// matches is the worktree filter: q (trimmed, lower case) in the name or branch.
-export const matches = (w: main.WorkspaceInfo, q: string) => !q || w.name.toLowerCase().includes(q) || w.branch.toLowerCase().includes(q)
+// projectKey is a project's entry in the collapsed list, beside repo paths.
+export const projectKey = (name: string) => `project:${name}`
 
-// groups sorts rows into one group per repo, in the window's order, then the
-// manual entries. A collapsed group lists no rows, except while filtering, when
-// every group lists just its matches and one without any goes. Rows of a repo no
-// longer in the window go too.
-export function groups(rows: main.WorkspaceInfo[], repos: main.RepoInfo[], collapsed: string[], q: string): Group[] {
+// matches is the worktree filter: q (trimmed, lower case) in the name, branch or
+// project name.
+export const matches = (w: main.WorkspaceInfo, q: string, project = '') =>
+  !q || w.name.toLowerCase().includes(q) || w.branch.toLowerCase().includes(q) || project.toLowerCase().includes(q)
+
+// groups sorts rows into one group per project (member: dir to project), by
+// name, then one per repo in the window's order without the project rows, then
+// the manual entries. A collapsed group lists no rows, except while filtering,
+// when every group lists just its matches and one without any goes. Rows of a
+// repo no longer in the window go too.
+export function groups(rows: main.WorkspaceInfo[], repos: main.RepoInfo[], collapsed: string[], q: string, member = new Map<string, string>()): Group[] {
+  const inWindow = new Set(repos.map((r) => r.path))
+  const projects: Group[] = projectNames(member).map((project) => ({ repo: null, project, rows: [] }))
   const out: Group[] = [...repos.map((repo) => ({ repo, rows: [] })), { repo: null, rows: [] }]
   for (const w of rows) {
-    const g = out.find((g) => (g.repo?.path ?? '') === w.repoPath)
-    if (g && matches(w, q) && (q || !collapsed.includes(w.repoPath))) g.rows.push(w)
+    const project = member.get(w.dir)
+    const g = project !== undefined && inWindow.has(w.repoPath) ? projects.find((g) => g.project === project) : out.find((g) => !g.project && (g.repo?.path ?? '') === w.repoPath)
+    const key = project !== undefined ? projectKey(project) : w.repoPath
+    if (g && matches(w, q, project) && (q || !collapsed.includes(key))) g.rows.push(w)
   }
-  return out.filter((g) => g.rows.length > 0 || (g.repo && !q))
+  // A project with no rows left in the window has nothing to show.
+  const live = new Set(rows.filter((w) => member.has(w.dir) && inWindow.has(w.repoPath)).map((w) => member.get(w.dir)))
+  return [...projects.filter((g) => live.has(g.project) && (g.rows.length > 0 || !q)), ...out.filter((g) => g.rows.length > 0 || (g.repo && !q))]
 }
+
+// numbered is the order ⌘1–9 count in: the rows as listed with nothing collapsed
+// and no filter.
+export const numbered = (rows: main.WorkspaceInfo[], repos: main.RepoInfo[], member: Map<string, string>) =>
+  groups(rows, repos, [], '', member).flatMap((g) => g.rows)
 
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 

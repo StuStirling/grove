@@ -5,7 +5,8 @@ import type { main } from '../wailsjs/go/models'
 import { WorkspaceHeader, WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
-import { groups } from './repos'
+import { groups, numbered, projectKey } from './repos'
+import { loadOverrides, mains, membership, projectNames, setOverride } from './projects'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { errText, keepFocus, key } from './util'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
@@ -25,6 +26,7 @@ type Modal =
   | { kind: 'linear-connect'; rejected: boolean; after: Modal | null } // after: what opens once connected
   | { kind: 'linear-search' }
   | { kind: 'linear-start'; ticket: Ticket }
+  | { kind: 'project'; dir: string } // New project… for this worktree
 
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
@@ -69,6 +71,7 @@ export default function App() {
   const [removals, setRemovals] = useState<rm.Removals>({})
   const [sidebarW, setSidebarW] = useState(() => sidebarWidth(Number(localStorage.getItem(SIDEBAR_KEY)) || 250))
   const [collapsed, setCollapsed] = useState(savedCollapsed)
+  const [overrides, setOverrides] = useState(loadOverrides)
   // The repo whose Remove from window is being confirmed in the sidebar, and
   // where focus was when it was asked.
   const [repoConfirm, setRepoConfirm] = useState<{ path: string; back: Element | null } | null>(null)
@@ -80,7 +83,11 @@ export default function App() {
   const q = filter.trim().toLowerCase()
   // Rows being removed stay in the list, where they were, until they're done.
   const listed = rm.withRemovals(all, removals)
-  const grouped = groups(listed, repos, collapsed, q)
+  // Projects come from the listed rows, so one mid-removal doesn't dissolve its
+  // group under the spinner.
+  const member = membership(listed, overrides)
+  const grouped = groups(listed, repos, collapsed, q, member)
+  const order = numbered(listed, repos, member) // what ⌘1–9 count
   // The rows shown: the list cursor never lands on a hidden one, nor on one
   // whose group the remove confirm stands in for.
   const filtered = grouped.flatMap((g) => (g.repo && g.repo.path === repoConfirm?.path ? [] : g.rows))
@@ -323,6 +330,8 @@ export default function App() {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next))
   }
 
+  const putInProject = (dir: string, name: string | null) => setOverrides(setOverride(dir, name))
+
   // A worktree going with the repo (from its config) that is mid-removal holds up
   // taking the repo out of the window, so the removal's outcome still has a row
   // to show in.
@@ -455,9 +464,11 @@ export default function App() {
     if (action.startsWith('ws:')) {
       // ⌘1-9 number the list's rows, so one hidden in a collapsed group has no
       // number shown and doesn't open.
-      const w = all[Number(action.slice(3))]
-      if (w && w.repoPath === repoConfirm?.path) return say(`cancel removing ${w.repo} to open ${w.name}`)
-      if (w && collapsed.includes(w.repoPath) && !filtered.some((f) => f.dir === w.dir)) return say(`expand ${w.repo} to open ${w.name}`)
+      const w = order[Number(action.slice(3))]
+      const project = w && member.get(w.dir)
+      if (w && !project && w.repoPath === repoConfirm?.path) return say(`cancel removing ${w.repo} to open ${w.name}`)
+      const hiddenIn = project ? projectKey(project) : w?.repoPath
+      if (w && collapsed.includes(hiddenIn!) && !filtered.some((f) => f.dir === w.dir)) return say(`expand ${project ?? w.repo} to open ${w.name}`)
       if (w) openWs(w.dir)
     }
   }
@@ -563,7 +574,7 @@ export default function App() {
   useLayoutEffect(() => {
     const i = filtered.findIndex((w) => w.dir === cursorRow.current)
     if (i >= 0) setCursor(i)
-  }, [listed.map((w) => w.dir).join('\n'), collapsed.join('\n'), repoConfirm?.path])
+  }, [listed.map((w) => w.dir + ' ' + (member.get(w.dir) ?? '')).join('\n'), collapsed.join('\n'), repoConfirm?.path])
   useEffect(() => setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1))), [filtered.length])
 
   // Run removal rows' timers: "Removed." collapsing away, a kept branch's wait.
@@ -632,6 +643,9 @@ export default function App() {
         all={all}
         groups={grouped}
         filtered={filtered}
+        member={member}
+        mains={mains(all)}
+        numbered={order}
         selected={selected}
         cursor={cursor}
         listFocused={listFocused}
@@ -655,6 +669,8 @@ export default function App() {
         collapsed={collapsed}
         onNewIn={newIn}
         onToggle={toggleRepo}
+        onProject={putInProject}
+        onNewProject={(dir) => !busy && setModal({ kind: 'project', dir })}
         onReveal={reveal}
         onSettings={settingsFor}
         onAskRemove={askRemoveRepo}
@@ -735,6 +751,16 @@ export default function App() {
       </footer>
 
       {modal?.kind === 'confirm' && <ConfirmDialog m={modal} close={() => setModal(null)} />}
+      {modal?.kind === 'project' && (
+        <ProjectForm
+          taken={projectNames(member)}
+          onCancel={() => setModal(null)}
+          onDone={(name) => {
+            putInProject(modal.dir, name)
+            setModal(null)
+          }}
+        />
+      )}
       {(modal?.kind === 'new' || modal?.kind === 'checkout') && (
         <WorktreeForm
           kind={modal.kind}
@@ -848,6 +874,46 @@ function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ProjectForm names a new project for the worktree whose menu asked.
+function ProjectForm({ taken, onDone, onCancel }: { taken: string[]; onDone: (name: string) => void; onCancel: () => void }) {
+  const [name, setName] = useState('')
+  const formRef = useRef<HTMLFormElement>(null)
+  const n = name.trim()
+  const ok = n !== '' && !taken.includes(n)
+  return (
+    <div className="overlay">
+      <form
+        className="dialog form"
+        role="dialog"
+        aria-label="New project"
+        tabIndex={-1}
+        ref={formRef}
+        onBlur={keepFocus}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (ok) onDone(n)
+        }}
+        onKeyDown={(e) => e.key === 'Escape' && (e.preventDefault(), onCancel())}
+      >
+        <h2>New project</h2>
+        <label>
+          <span>Name</span>
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="project name" spellCheck={false} />
+        </label>
+        {n !== '' && !ok && <p className="err">{n} is already a project</p>}
+        <div className="buttons">
+          <button type="button" onClick={onCancel}>
+            Cancel <kbd>esc</kbd>
+          </button>
+          <button type="submit" className="primary" disabled={!ok}>
+            Create <kbd>↩</kbd>
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

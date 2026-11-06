@@ -54,6 +54,10 @@ button kbd { margin-left: 6px; background: transparent; }
 .group-menu { flex: none; margin-left: auto; padding: 0 6px; background: transparent; border: 0; color: var(--muted); font-size: 14px; line-height: 18px; opacity: 0; }
 .group-menu:hover { color: var(--text); }
 .list li.group:hover .group-menu, .list li.group:focus-within .group-menu, .group-menu[aria-expanded='true'] { opacity: 1; }
+/* A project's header: work spanning repos, set apart from the repo headers. */
+.list li.group.project { color: var(--idle); }
+/* Each repo's main checkout. */
+.tag-main { margin-left: 6px; padding: 0 4px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--muted); font-size: 10px; font-weight: 400; vertical-align: 1px; }
 /* Remove from window's inline confirm, in place of the repo's group. */
 .list li.repo-confirm, .list li.repo-confirm:hover { flex-direction: column; gap: 2px; margin: 6px 0; padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border-strong); cursor: default; }
 .rm-q { font-weight: 600; overflow-wrap: anywhere; }

@@ -3,7 +3,8 @@ import type { main } from '../wailsjs/go/models'
 import { ClipboardSetText } from '../wailsjs/runtime/runtime'
 import { Menu, type MenuItem } from './Menu'
 import * as rm from './removal'
-import { removeText, type Group } from './repos'
+import { projectKey, removeText, type Group } from './repos'
+import { projectNames, rowName } from './projects'
 import { key, startDrag } from './util'
 
 export type RemovalAction = 'force' | 'keep' | 'delete-branch' | 'dismiss'
@@ -24,6 +25,9 @@ export function Sidebar(props: {
   all: main.WorkspaceInfo[]
   groups: Group[]
   filtered: main.WorkspaceInfo[] // the rows shown, in order: what the cursor moves over
+  member: Map<string, string> // dir -> project
+  mains: Set<string> // each repo's main checkout
+  numbered: main.WorkspaceInfo[] // what ⌘1–9 count, in order
   selected: string | null
   cursor: number
   listFocused: boolean
@@ -39,7 +43,9 @@ export function Sidebar(props: {
   onHold: (dir: string, held: boolean) => void
   collapsed: string[] // repo paths
   onNewIn: (repoPath: string) => void
-  onToggle: (repoPath: string) => void
+  onToggle: (key: string) => void // a repo path, or projectKey(name)
+  onProject: (dir: string, name: string | null) => void // null: out of every project
+  onNewProject: (dir: string) => void
   onReveal: (repoPath: string) => void
   onSettings: (config: string) => void
   onAskRemove: (repoPath: string) => void
@@ -50,7 +56,7 @@ export function Sidebar(props: {
 }) {
   const { snap, all, filtered, selected, cursor, listFocused, filter, filterRef, removals } = props
   const listRef = useRef<HTMLUListElement>(null)
-  // repo: the header whose ⋯ opened it, for aria-expanded.
+  // repo: the header whose ⋯ opened it (a repo path or projectKey), for aria-expanded.
   const [menu, setMenu] = useState<{ label: string; at: { x: number; y: number }; items: MenuItem[]; repo?: string } | null>(null)
   const [dragging, setDragging] = useState(false)
 
@@ -61,8 +67,21 @@ export function Sidebar(props: {
       items: [
         ...(w.branch ? [{ label: 'Copy branch', onSelect: () => ClipboardSetText(w.branch) }] : []),
         { label: 'Copy path', onSelect: () => ClipboardSetText(w.dir) },
+        // Manual [[workspace]] entries are never in a project.
+        ...(w.repoPath ? projectItems(w) : []),
       ],
     })
+  const projectItems = (w: main.WorkspaceInfo): MenuItem[] => {
+    const own = props.member.get(w.dir)
+    return [
+      'divider',
+      ...projectNames(props.member)
+        .filter((p) => p !== own)
+        .map((p) => ({ label: `Add to ${p}`, onSelect: () => props.onProject(w.dir, p) })),
+      { label: 'New project…', onSelect: () => props.onNewProject(w.dir) },
+      ...(own !== undefined ? [{ label: 'Remove from project', onSelect: () => props.onProject(w.dir, null) }] : []),
+    ]
+  }
   const repoMenu = (repo: main.RepoInfo, button: HTMLElement) => {
     const b = button.getBoundingClientRect()
     setMenu({
@@ -77,6 +96,17 @@ export function Sidebar(props: {
         // The window's own repo can't go: the window is tied to it.
         ...(repo.added ? ['divider' as const, { label: 'Remove from window…', danger: true, onSelect: () => props.onAskRemove(repo.path) }] : []),
       ],
+    })
+  }
+
+  const projectMenu = (name: string, button: HTMLElement) => {
+    const b = button.getBoundingClientRect()
+    const key = projectKey(name)
+    setMenu({
+      label: `Actions for ${name}`,
+      at: { x: b.left, y: b.bottom + 2 },
+      repo: key,
+      items: [{ label: props.collapsed.includes(key) ? 'Expand' : 'Collapse', onSelect: () => props.onToggle(key) }],
     })
   }
 
@@ -119,27 +149,35 @@ export function Sidebar(props: {
       />
       <ul className="list" ref={listRef}>
         {props.groups.map((g) => {
+          const project = g.project
           const path = g.repo?.path ?? ''
           if (g.repo && path === props.confirm) {
             const text = removeText(g.repo, all)
             return <RepoConfirm key={'repo:' + path} {...text} onAnswer={props.onConfirm} />
           }
-          const hidden = g.repo && props.collapsed.includes(path) && !g.rows.length ? all.filter((w) => w.repoPath === path).length : 0
+          // id is the group's entry in collapsed and its menu's; a project's
+          // hidden rows are its members, a repo's the rows not in a project.
+          const id = project !== undefined ? projectKey(project) : path
+          const hidden =
+            (project !== undefined || g.repo) && props.collapsed.includes(id) && !g.rows.length
+              ? all.filter((w) => (project !== undefined ? props.member.get(w.dir) === project : w.repoPath === path && !props.member.has(w.dir))).length
+              : 0
+          const title = project ?? g.repo?.name
           return (
-            <Fragment key={'repo:' + path}>
-              <li className="group" onMouseDown={(e) => e.preventDefault()}>
-                <span className="group-name">{g.repo ? g.repo.name : 'Other'}</span>
+            <Fragment key={project !== undefined ? id : 'repo:' + path}>
+              <li className={project !== undefined ? 'group project' : 'group'} onMouseDown={(e) => e.preventDefault()}>
+                <span className="group-name">{title ?? 'Other'}</span>
                 {g.repo?.added && <span className="tag">added</span>}
                 {hidden > 0 && <span className="tag">{hidden} hidden</span>}
-                {g.repo && (
+                {title !== undefined && (
                   <button
                     className="group-menu"
-                    data-repo={path}
-                    aria-label={`Actions for ${g.repo.name}`}
+                    data-repo={id}
+                    aria-label={`Actions for ${title}`}
                     aria-haspopup="menu"
-                    aria-expanded={menu?.repo === path}
-                    title={`Actions for ${g.repo.name}`}
-                    onClick={(e) => repoMenu(g.repo!, e.currentTarget)}
+                    aria-expanded={menu?.repo === id}
+                    title={`Actions for ${title}`}
+                    onClick={(e) => (project !== undefined ? projectMenu(project, e.currentTarget) : repoMenu(g.repo!, e.currentTarget))}
                   >
                     ⋯
                   </button>
@@ -147,7 +185,7 @@ export function Sidebar(props: {
               </li>
               {g.rows.map((w) => {
                 const r = removals[w.dir]
-                const n = all.indexOf(w)
+                const n = props.numbered.findIndex((x) => x.dir === w.dir)
                 // A kept branch's row waits while it is hovered or focused.
                 const hold = r?.kind === 'kept' ? {
                   onMouseOver: () => props.onHold(w.dir, true),
@@ -187,7 +225,10 @@ export function Sidebar(props: {
                       )}
                     </span>
                     <span className="text">
-                      <span className="name">{w.name}</span>
+                      <span className="name">
+                        {project !== undefined ? rowName(w, project) : w.name}
+                        {props.mains.has(w.dir) && <span className="tag-main">main</span>}
+                      </span>
                       {w.branch && <span className="branch">{w.branch}</span>}
                       {r?.kind === 'removing' && <span className="rm-line busy">Removing worktree…</span>}
                       {r?.kind === 'deleting' && <span className="rm-line busy">Deleting branch…</span>}
