@@ -489,3 +489,22 @@ func TestAskClaude(t *testing.T) {
 		t.Error("no operation: want an error")
 	}
 }
+
+func TestUpdateShortcut(t *testing.T) {
+	seen := map[string]string{}
+	found := false
+	for _, s := range shortcuts {
+		if s.key == "" {
+			continue
+		}
+		k := accelLabel(accel(s.key, s.mods))
+		if prev, dup := seen[k]; dup {
+			t.Errorf("%s is both %s and %s", k, prev, s.action)
+		}
+		seen[k] = s.action
+		found = found || (s.action == "update" && s.key == "u" && len(s.mods) == 0)
+	}
+	if !found {
+		t.Error("no ⌘U update shortcut")
+	}
+}

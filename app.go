@@ -859,6 +859,7 @@ var shortcuts = []shortcut{
 	{"File", "New Shell", "new-shell", "t", shiftMod},
 	{"File", "", "", "", nil},
 	{"File", "Open in Terminal", "terminal", "o", shiftMod},
+	{"File", "Update from Base…", "update", "u", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "Close Worktree", "close", "w", cmdMod},
 	{"File", "Delete Worktree…", "delete", "backspace", cmdMod},
