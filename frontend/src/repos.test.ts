@@ -1,13 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { main } from '../wailsjs/go/models'
-import { groups, removeText } from './repos.ts'
+import { groups, numbered, projectKey, removeText } from './repos.ts'
 
 // Each repo has a config of its own unless given one.
 const repo = (path: string, added = false) => ({ name: path.slice(1), path, added, config: path + '/.grove.toml' }) as main.RepoInfo
 const ws = (repoPath: string, name: string, kinds: string[] = [], config = repoPath + '/.grove.toml') =>
   ({ name, branch: 'b-' + name, dir: `${repoPath || '/manual'}/${name}`, repoPath, config, panes: kinds.map((kind, i) => ({ id: name + i, kind })) }) as main.WorkspaceInfo
-const shape = (gs: ReturnType<typeof groups>) => gs.map((g) => [g.repo?.path ?? null, g.rows.map((w) => w.dir)])
+const shape = (gs: ReturnType<typeof groups>) => gs.map((g) => [g.project ?? g.repo?.path ?? null, g.rows.map((w) => w.dir)])
 
 const [a, b] = [repo('/a'), repo('/b', true)]
 const rows = [ws('/a', 'main'), ws('/a', 'fix'), ws('/b', 'main'), ws('', 'notes')]
@@ -59,4 +59,29 @@ test("the remove confirm counts everything from the repo's config, and nothing e
     ws('/other', 'z', ['claude', 'shell']),
   ]
   assert.equal(removeText(repo('/app', true), all).detail, 'Its 3 worktrees and branches stay on disk. 1 open Claude tab and 2 shells will close.')
+})
+
+const member = new Map([['/a/fix', 'p'], ['/b/main', 'p']])
+
+test('project groups come first, sorted, and their rows leave the repo groups', () => {
+  const m = new Map([['/a/fix', 'zed'], ['/b/main', 'alpha']])
+  assert.deepEqual(shape(groups(rows, [a, b], [], '', m)), [
+    ['alpha', ['/b/main']],
+    ['zed', ['/a/fix']],
+    ['/a', ['/a/main']],
+    ['/b', []],
+    [null, ['/manual/notes']],
+  ])
+})
+
+test('filtering by project name keeps the whole group', () => {
+  assert.deepEqual(shape(groups(rows, [a, b], [], 'p', member)).slice(0, 1), [['p', ['/a/fix', '/b/main']]])
+})
+
+test('a collapsed project lists no rows', () => {
+  assert.deepEqual(shape(groups(rows, [a, b], [projectKey('p')], '', member))[0], ['p', []])
+})
+
+test('numbered follows display order whatever is collapsed', () => {
+  assert.deepEqual(numbered(rows, [a, b], member).map((w) => w.dir), ['/a/fix', '/b/main', '/a/main', '/manual/notes'])
 })
