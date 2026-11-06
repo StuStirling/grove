@@ -324,3 +324,139 @@ func (a *App) PlanUpdate(dir string) (UpdatePlan, error) {
 	}
 	return planUpdate(ws.Dir, ws.Branch, base), nil
 }
+
+// UpdateResult is how running, continuing or pushing an update went.
+type UpdateResult struct {
+	Status   string      `json:"status"`   // "done" | "stopped" | "failed"
+	Push     string      `json:"push"`     // when done: pushKind
+	Progress *InProgress `json:"progress"` // when stopped
+	Reason   string      `json:"reason"`   // when failed
+	Detail   string      `json:"detail"`
+}
+
+// noEditor keeps git from opening an editor, which would hang with no
+// terminal. GIT_EDITOR beats core.editor and the user's own GIT_EDITOR.
+var noEditor = []string{"GIT_EDITOR=true"}
+
+// stepArgs is the git command for step under strategy.
+func stepArgs(s UpdateStep, strategy string) []string {
+	switch {
+	case s.Kind == "ff":
+		return []string{"pull", "--ff-only"}
+	case s.Kind == "pull" && strategy == "merge":
+		return []string{"pull", "--no-rebase", "--no-edit"}
+	case s.Kind == "pull":
+		return []string{"pull", "--rebase"}
+	case strategy == "merge":
+		return []string{"merge", "--no-edit", s.Ref}
+	}
+	return []string{"rebase", s.Ref}
+}
+
+// after is the result of a git command that may have stopped mid-operation.
+func after(dir, branch string, err error) UpdateResult {
+	if p := inProgress(dir, branch); p != nil {
+		return UpdateResult{Status: "stopped", Progress: p}
+	}
+	if err != nil {
+		reason, detail := explain(err)
+		return UpdateResult{Status: "failed", Reason: reason, Detail: detail}
+	}
+	return UpdateResult{Status: "done", Push: pushKind(dir)}
+}
+
+// runUpdate carries out the plan made at head with strategy, stopping at the
+// first step that fails or stops on conflicts. Steps are worked out again from
+// the fetched refs, so the strategy picked in the dialog applies.
+func runUpdate(dir, branch, base, head, strategy string) UpdateResult {
+	if revParse(dir, "HEAD") != head {
+		return UpdateResult{Status: "failed", Reason: "Branch changed since planning; check again"}
+	}
+	for _, s := range stepsFor(dir, branch, base) {
+		if r := after(dir, branch, runGitEnv(dir, noEditor, stepArgs(s, strategy)...)); r.Status != "done" {
+			return r
+		}
+	}
+	return after(dir, branch, nil)
+}
+
+// continueUpdate carries on the rebase or merge stopped at dir, once its
+// conflicts are resolved and staged. "done" means the caller should re-plan,
+// as later steps haven't run.
+func continueUpdate(dir, branch string) UpdateResult {
+	args := []string{"rebase", "--continue"}
+	switch operation(dir) {
+	case "":
+		return after(dir, branch, nil)
+	case "merge":
+		args = []string{"commit", "--no-edit"}
+	}
+	return after(dir, branch, runGitEnv(dir, noEditor, args...))
+}
+
+// abortUpdate abandons the rebase or merge stopped at dir.
+func abortUpdate(dir string) error {
+	switch operation(dir) {
+	case "rebase":
+		return runGit(dir, "rebase", "--abort")
+	case "merge":
+		return runGit(dir, "merge", "--abort")
+	}
+	return nil
+}
+
+// errStaleLease is a force push refused because the remote moved on.
+var errStaleLease = errors.New("Remote changed since you fetched. Run Update again.")
+
+// pushUpdate pushes branch the way kind (from pushKind) says.
+func pushUpdate(dir, branch, base, kind string) error {
+	var err error
+	switch kind {
+	case "force":
+		err = runGit(dir, "push", "--force-with-lease")
+	case "upstream":
+		remote := upstreamRemote(dir, base)
+		if r := gitLines(dir, "config", "branch."+branch+".remote"); len(r) == 1 {
+			remote = r[0]
+		}
+		err = runGit(dir, "push", "-u", remote, branch)
+	default:
+		err = runGit(dir, "push")
+	}
+	// ponytail: matches git's English "(stale info)", as refusedAsDirty does.
+	var ge *gitError
+	if errors.As(err, &ge) && strings.Contains(ge.out, "stale info") {
+		return errStaleLease
+	}
+	return err
+}
+
+// RunUpdate carries out the update planned at head, with strategy.
+func (a *App) RunUpdate(dir, head, strategy string) (UpdateResult, error) {
+	ws, base, err := a.worktreeAt(dir)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	return runUpdate(ws.Dir, ws.Branch, base, head, strategy), nil
+}
+
+// ContinueUpdate carries on the stopped rebase or merge at dir.
+func (a *App) ContinueUpdate(dir string) (UpdateResult, error) {
+	ws, _, err := a.worktreeAt(dir)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	return continueUpdate(ws.Dir, ws.Branch), nil
+}
+
+// AbortUpdate abandons the stopped rebase or merge at dir.
+func (a *App) AbortUpdate(dir string) error { return abortUpdate(dir) }
+
+// PushUpdate pushes the worktree at dir's branch the way kind says.
+func (a *App) PushUpdate(dir, kind string) error {
+	ws, base, err := a.worktreeAt(dir)
+	if err != nil {
+		return err
+	}
+	return pushUpdate(ws.Dir, ws.Branch, base, kind)
+}

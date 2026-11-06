@@ -311,3 +311,113 @@ func TestPlanFetchFailure(t *testing.T) {
 		t.Errorf("steps from known refs: %+v", p.Steps)
 	}
 }
+
+func TestRunRefusesMovedHead(t *testing.T) {
+	_, _, dir := syncRepo(t)
+	r := runUpdate(dir, "feat", "origin/trunk", "0000", "rebase")
+	if r.Status != "failed" || r.Reason != "Branch changed since planning; check again" {
+		t.Errorf("%+v", r)
+	}
+}
+
+// behindT pushes a commit on feat, then adds a fetched commit to trunk.
+func behindT(t *testing.T) (origin, clone, dir string) {
+	t.Helper()
+	origin, clone, dir = syncRepo(t)
+	commitT(t, dir, "f.txt", "f")
+	pushT(t, dir)
+	commitT(t, origin, "t.txt", "t")
+	gitT(t, clone, "fetch", "-q")
+	return origin, clone, dir
+}
+
+func TestRunRebaseThenPush(t *testing.T) {
+	_, _, dir := behindT(t)
+	r := runUpdate(dir, "feat", "origin/trunk", headT(t, dir), "rebase")
+	if r.Status != "done" || r.Push != "force" {
+		t.Fatalf("%+v", r)
+	}
+	if err := pushUpdate(dir, "feat", "origin/trunk", "force"); err != nil {
+		t.Fatal(err)
+	}
+	if k := pushKind(dir); k != "" {
+		t.Errorf("after force push: %q", k)
+	}
+}
+
+func TestRunMergeNoEditor(t *testing.T) {
+	t.Setenv("GIT_EDITOR", "false") // an editor launch fails the merge
+	_, _, dir := behindT(t)
+	r := runUpdate(dir, "feat", "origin/trunk", headT(t, dir), "merge")
+	if r.Status != "done" || r.Push != "push" {
+		t.Fatalf("%+v", r)
+	}
+	if revParse(dir, "HEAD^2") == "" {
+		t.Error("HEAD is not a merge commit")
+	}
+}
+
+func TestRunConflictContinueAbort(t *testing.T) {
+	t.Setenv("GIT_EDITOR", "false")
+	for _, strategy := range []string{"rebase", "merge"} {
+		_, _, dir := conflictRepo(t)
+		pre := headT(t, dir)
+		r := runUpdate(dir, "feat", "origin/trunk", pre, strategy)
+		if r.Status != "stopped" || r.Progress == nil || r.Progress.Kind != strategy || !slices.Equal(r.Progress.Files, []string{"a.txt"}) {
+			t.Fatalf("%s: run %+v", strategy, r)
+		}
+		if r := continueUpdate(dir, "feat"); r.Status != "stopped" || !slices.Equal(r.Progress.Files, []string{"a.txt"}) {
+			t.Fatalf("%s: continue unresolved %+v", strategy, r)
+		}
+		writeT(t, filepath.Join(dir, "a.txt"), "both")
+		gitT(t, dir, "add", "a.txt")
+		if r := continueUpdate(dir, "feat"); r.Status != "done" || operation(dir) != "" {
+			t.Fatalf("%s: continue resolved %+v", strategy, r)
+		}
+
+		gitT(t, dir, "reset", "-q", "--hard", pre)
+		if r := runUpdate(dir, "feat", "origin/trunk", pre, strategy); r.Status != "stopped" {
+			t.Fatalf("%s: second run %+v", strategy, r)
+		}
+		if err := abortUpdate(dir); err != nil {
+			t.Fatal(err)
+		}
+		if operation(dir) != "" || headT(t, dir) != pre {
+			t.Errorf("%s: abort left %q at %s", strategy, operation(dir), headT(t, dir))
+		}
+	}
+}
+
+func TestRunFFOnlyDiverged(t *testing.T) {
+	origin, clone, _ := syncRepo(t)
+	commitT(t, clone, "local.txt", "l")
+	commitT(t, origin, "t.txt", "t")
+	gitT(t, clone, "fetch", "-q")
+	r := runUpdate(clone, "trunk", "origin/trunk", headT(t, clone), "rebase")
+	if r.Status != "failed" || r.Progress != nil || r.Reason == "" {
+		t.Errorf("%+v", r)
+	}
+}
+
+func TestPushUpstream(t *testing.T) {
+	_, _, dir := syncRepo(t)
+	commitT(t, dir, "f.txt", "f")
+	if err := pushUpdate(dir, "feat", "origin/trunk", "upstream"); err != nil {
+		t.Fatal(err)
+	}
+	if u := upstreamName(dir); u != "origin/feat" {
+		t.Errorf("upstream %q", u)
+	}
+}
+
+func TestPushStaleLease(t *testing.T) {
+	origin, _, dir := syncRepo(t)
+	commitT(t, dir, "f.txt", "f")
+	pushT(t, dir)
+	otherCommitT(t, origin, "o.txt", "o") // not fetched here
+	gitT(t, dir, "commit", "-q", "--amend", "-m", "amended")
+	err := pushUpdate(dir, "feat", "origin/trunk", "force")
+	if err == nil || err.Error() != "Remote changed since you fetched. Run Update again." {
+		t.Errorf("%v", err)
+	}
+}
