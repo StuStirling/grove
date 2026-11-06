@@ -6,7 +6,7 @@ import { WorkspaceHeader, WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
 import { groups, numbered, projectKey } from './repos'
-import { loadOverrides, mains, membership, prune, saveOverrides } from './projects'
+import { loadOverrides, mains, membership, projectNames, prune, saveOverrides } from './projects'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { errText, keepFocus, key } from './util'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
@@ -26,6 +26,7 @@ type Modal =
   | { kind: 'linear-connect'; rejected: boolean; after: Modal | null } // after: what opens once connected
   | { kind: 'linear-search' }
   | { kind: 'linear-start'; ticket: Ticket }
+  | { kind: 'project'; dir: string } // New project… for this worktree
 
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
@@ -676,6 +677,8 @@ export default function App() {
         collapsed={collapsed}
         onNewIn={newIn}
         onToggle={toggleRepo}
+        onProject={(dir, name) => setOverrides((o) => ({ ...o, [dir]: name }))}
+        onNewProject={(dir) => !busy && setModal({ kind: 'project', dir })}
         onReveal={reveal}
         onSettings={settingsFor}
         onAskRemove={askRemoveRepo}
@@ -756,6 +759,16 @@ export default function App() {
       </footer>
 
       {modal?.kind === 'confirm' && <ConfirmDialog m={modal} close={() => setModal(null)} />}
+      {modal?.kind === 'project' && (
+        <ProjectForm
+          taken={projectNames(member)}
+          onCancel={() => setModal(null)}
+          onDone={(name) => {
+            setOverrides((o) => ({ ...o, [modal.dir]: name }))
+            setModal(null)
+          }}
+        />
+      )}
       {(modal?.kind === 'new' || modal?.kind === 'checkout') && (
         <WorktreeForm
           kind={modal.kind}
@@ -869,6 +882,46 @@ function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ProjectForm names a new project for the worktree whose menu asked.
+function ProjectForm({ taken, onDone, onCancel }: { taken: string[]; onDone: (name: string) => void; onCancel: () => void }) {
+  const [name, setName] = useState('')
+  const formRef = useRef<HTMLFormElement>(null)
+  const n = name.trim()
+  const ok = n !== '' && !taken.includes(n)
+  return (
+    <div className="overlay">
+      <form
+        className="dialog form"
+        role="dialog"
+        aria-label="New project"
+        tabIndex={-1}
+        ref={formRef}
+        onBlur={keepFocus}
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (ok) onDone(n)
+        }}
+        onKeyDown={(e) => e.key === 'Escape' && (e.preventDefault(), onCancel())}
+      >
+        <h2>New project</h2>
+        <label>
+          <span>Name</span>
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="project name" spellCheck={false} />
+        </label>
+        {n !== '' && !ok && <p className="err">{n} is already a project</p>}
+        <div className="buttons">
+          <button type="button" onClick={onCancel}>
+            Cancel <kbd>esc</kbd>
+          </button>
+          <button type="submit" className="primary" disabled={!ok}>
+            Create <kbd>↩</kbd>
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

@@ -4,7 +4,7 @@ import { ClipboardSetText } from '../wailsjs/runtime/runtime'
 import { Menu, type MenuItem } from './Menu'
 import * as rm from './removal'
 import { projectKey, removeText, type Group } from './repos'
-import { rowName } from './projects'
+import { projectNames, rowName } from './projects'
 import { key, startDrag } from './util'
 
 export type RemovalAction = 'force' | 'keep' | 'delete-branch' | 'dismiss'
@@ -44,6 +44,8 @@ export function Sidebar(props: {
   collapsed: string[] // repo paths
   onNewIn: (repoPath: string) => void
   onToggle: (key: string) => void // a repo path, or projectKey(name)
+  onProject: (dir: string, name: string | null) => void // null: out of every project
+  onNewProject: (dir: string) => void
   onReveal: (repoPath: string) => void
   onSettings: (config: string) => void
   onAskRemove: (repoPath: string) => void
@@ -65,8 +67,21 @@ export function Sidebar(props: {
       items: [
         ...(w.branch ? [{ label: 'Copy branch', onSelect: () => ClipboardSetText(w.branch) }] : []),
         { label: 'Copy path', onSelect: () => ClipboardSetText(w.dir) },
+        // Manual [[workspace]] entries are never in a project.
+        ...(w.repoPath ? projectItems(w) : []),
       ],
     })
+  const projectItems = (w: main.WorkspaceInfo): MenuItem[] => {
+    const own = props.member.get(w.dir)
+    return [
+      'divider',
+      ...projectNames(props.member)
+        .filter((p) => p !== own)
+        .map((p) => ({ label: `Add to ${p}`, onSelect: () => props.onProject(w.dir, p) })),
+      { label: 'New project…', onSelect: () => props.onNewProject(w.dir) },
+      ...(own !== undefined ? [{ label: 'Remove from project', onSelect: () => props.onProject(w.dir, null) }] : []),
+    ]
+  }
   const repoMenu = (repo: main.RepoInfo, button: HTMLElement) => {
     const b = button.getBoundingClientRect()
     setMenu({
