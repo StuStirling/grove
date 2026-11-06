@@ -7,7 +7,8 @@ import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
 import { groups, numbered, projectKey } from './repos'
 import { loadOverrides, mains, membership, projectNames, setOverride } from './projects'
-import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
+import { activate, cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
+import { Update } from './UpdateDialog'
 import { errText, keepFocus, key } from './util'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
 import { LINEAR_REJECTED, type Ticket } from './start'
@@ -27,6 +28,7 @@ type Modal =
   | { kind: 'linear-search' }
   | { kind: 'linear-start'; ticket: Ticket }
   | { kind: 'project'; dir: string } // New project… for this worktree
+  | { kind: 'update'; dir: string } // Update from Base… for this worktree
 
 const FONT_KEY = 'grove.fontDelta'
 const SIDEBAR_KEY = 'grove.sidebarWidth'
@@ -270,6 +272,23 @@ export default function App() {
     }
   }
 
+  // askClaude hands the worktree's stopped rebase or merge to its Claude, then
+  // shows that tab. A working Claude is asked about first.
+  async function askClaude(dir: string) {
+    setModal(null)
+    const w = all.find((w) => w.dir === dir)
+    const claude = w?.panes?.find((p) => p.kind === 'claude')
+    if (claude && (await api.TabBusy(claude.id)) && !(await confirm(`Claude is working in ${w!.name}. Type the prompt anyway?`))) return say('cancelled')
+    try {
+      const id = await api.AskClaude(dir)
+      await openWs(dir)
+      setLayout(dir, (l) => activate(l, id))
+      focusNow()
+    } catch (e) {
+      say(errText(e), true)
+    }
+  }
+
   // closeTab stops a tab's process, asking first if that interrupts something.
   async function closeTab(dir: string, id: string) {
     const p = all.find((w) => w.dir === dir)?.panes?.find((p) => p.id === id)
@@ -420,6 +439,8 @@ export default function App() {
           (a) => setModal(a.connected ? { kind: 'linear-search' } : { kind: 'linear-connect', rejected: false, after: { kind: 'linear-search' } }),
           (e) => (errText(e) === LINEAR_REJECTED ? setModal({ kind: 'linear-connect', rejected: true, after: { kind: 'linear-search' } }) : say(errText(e), true)),
         )
+      case 'update':
+        return need((w) => (w.branch ? setModal({ kind: 'update', dir: w.dir }) : say(`${w.name} is not on a branch`)))
       case 'terminal':
         return need((w) => api.OpenInTerminal(w.dir).then(() => say(`opened ${w.name} in terminal`), (e) => say(errText(e), true)))
       case 'close':
@@ -671,6 +692,7 @@ export default function App() {
         onToggle={toggleRepo}
         onProject={putInProject}
         onNewProject={(dir) => !busy && setModal({ kind: 'project', dir })}
+        onUpdate={(dir) => !busy && setModal({ kind: 'update', dir })}
         onReveal={reveal}
         onSettings={settingsFor}
         onAskRemove={askRemoveRepo}
@@ -801,6 +823,9 @@ export default function App() {
             say(`added ${modal.init.name}`)
           }}
         />
+      )}
+      {modal?.kind === 'update' && all.find((w) => w.dir === modal.dir) && (
+        <Update ws={all.find((w) => w.dir === modal.dir)!} onClose={() => setModal(null)} onClaude={() => askClaude(modal.dir)} say={(t) => say(t)} />
       )}
       {modal?.kind === 'help' && <Help snap={snap} close={() => setModal(null)} />}
       {modal?.kind === 'linear-connect' && <ConnectDialog rejected={modal.rejected} onCancel={() => setModal(null)} onDone={() => setModal(modal.after)} />}
@@ -1301,6 +1326,11 @@ function Help({ snap, close }: { snap: main.Snapshot | null; close: () => void }
     { group: '', label: 'Dialogs: next field / confirm / cancel', keys: '⇥ ↩ esc' },
     { group: '', label: 'Open a link in a pane', keys: mac ? '⌘-click' : 'Ctrl-click' },
     { group: '', label: 'Select text over a mouse-aware app', keys: mac ? '⌥-drag' : 'Shift-drag' },
+  ])
+  groups.set('Update from Base', [
+    { group: '', label: 'Plan: update / rebase / merge / cancel', keys: '↩ R M esc' },
+    { group: '', label: 'Push: push / not now', keys: '↩ esc' },
+    { group: '', label: 'Conflicts: continue / ask Claude / abort / close', keys: mac ? '↩ C ⌘⌫ esc' : '↩ C Ctrl+⌫ esc' },
   ])
   return (
     <div className="overlay" onClick={close}>
