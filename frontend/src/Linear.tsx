@@ -6,11 +6,13 @@ import {
   clashes,
   defaultRepos,
   existingWorktree,
+  issueBranch,
   latest,
   LINEAR_LIMITED,
   LINEAR_NOT_CONNECTED,
   LINEAR_REJECTED,
   nextLead,
+  repoIssue,
   REPOS_KEY,
   suggestBranch,
   suggestName,
@@ -204,7 +206,7 @@ export function SearchPalette(props: {
 
   const typed = query.trim() !== ''
   const issues: Hit[] =
-    scope === 'projects' ? [] : (results?.issues ?? []).map((issue) => ({ kind: 'issue', issue, worktree: existingWorktree(issue.branchName, snap.workspaces ?? []) }))
+    scope === 'projects' ? [] : (results?.issues ?? []).map((issue) => ({ kind: 'issue', issue, worktree: existingWorktree(issueBranch(issue), snap.workspaces ?? []) }))
   const projects: Hit[] = scope === 'issues' ? [] : (results?.projects ?? []).map((project) => ({ kind: 'project', project }))
   const sections = [
     { title: typed ? 'Issues' : 'Assigned to you', hits: issues },
@@ -376,16 +378,20 @@ const openLink = (url: string) => (e: React.MouseEvent) => {
 
 type Row = { state: 'running' | 'done' | 'failed' | 'skipped'; dir?: string; err?: string }
 
-// StartWork picks the repos, lead, branch and worktree name for a ticket, then
+// StartWork picks the repos, lead, branches and worktree name for a ticket, then
 // creates the worktrees: the other repos first, in parallel, then the lead, so
-// its seed only adds worktrees that exist.
+// its seed only adds worktrees that exist. Each repo gets its own branch, from
+// its platform's issue when the ticket is a project.
 export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current: string; onDone: (leadDir: string, created: number) => void; onCancel: () => void }) {
   const { snap, ticket, onDone, onCancel } = props
   const repos = snap.repos ?? []
-  const nameOf = (p: string) => repos.find((r) => r.path === p)?.name ?? p
+  const repoOf = (p: string) => repos.find((r) => r.path === p) ?? { name: p, labels: [] }
+  const nameOf = (p: string) => repoOf(p).name
   const [ticked, setTicked] = useState(() => defaultRepos(savedRepos(), repos, props.current))
   const [lead, setLead] = useState(() => nextLead(props.current, ticked))
-  const [branch, setBranch] = useState(() => suggestBranch(ticket))
+  const [edits, setEdits] = useState<Record<string, string>>({}) // branches typed over the suggestion
+  const branchOf = (p: string) => edits[p] ?? suggestBranch(ticket, repoOf(p))
+  const target = (p: string, path: string): Target => ({ repo: nameOf(p), path, branch: branchOf(p), issue: repoIssue(ticket, repoOf(p))?.id })
   const [name, setName] = useState(() => suggestName(ticket))
   const [seed, setSeed] = useState(true)
   const [showPrompt, setShowPrompt] = useState(false)
@@ -402,7 +408,7 @@ export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current:
     setPlanning(true)
     const t = setTimeout(
       () =>
-        Promise.all(ticked.map((p) => api.PlanRepo(p, branch, name).then((pl) => [p, pl] as const))).then(
+        Promise.all(ticked.map((p) => api.PlanRepo(p, branchOf(p), name).then((pl) => [p, pl] as const))).then(
           (ps) => {
             if (!seq.current(id)) return
             setPlans(Object.fromEntries(ps))
@@ -418,10 +424,10 @@ export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current:
       250,
     )
     return () => clearTimeout(t)
-  }, [ticked, branch, name])
+  }, [ticked, edits, name])
 
   const others = ticked.filter((p) => p !== lead)
-  const targets: Target[] = (lead ? [lead, ...others] : []).map((p) => ({ repo: nameOf(p), path: plans[p]?.path ?? '' }))
+  const targets: Target[] = (lead ? [lead, ...others] : []).map((p) => target(p, plans[p]?.path ?? ''))
   const clash = clashes(targets)
   const problem = (p: string) => (plans[p]?.action === 'conflict' ? plans[p].reason : clash[nameOf(p)])
   const blocked = ticked.length === 0 || planning || ticked.some(problem)
@@ -434,7 +440,7 @@ export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current:
 
   const runRepo = (p: string) => {
     setRows((r) => ({ ...r, [p]: { state: 'running' } }))
-    api.StartRepo(p, branch, name, { prompt: '', addDirs: [] }).then(
+    api.StartRepo(p, branchOf(p), name, { prompt: '', addDirs: [] }).then(
       (dir) => setRows((r) => ({ ...r, [p]: { state: 'done', dir } })),
       (e) => setRows((r) => ({ ...r, [p]: { state: 'failed', err: errText(e) } })),
     )
@@ -444,15 +450,14 @@ export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current:
   useEffect(() => {
     if (phase !== 'creating' || rows[lead] || !others.every((p) => rows[p]?.state === 'done' || rows[p]?.state === 'skipped')) return
     const done = others.filter((p) => rows[p]?.state === 'done')
-    const leadTarget = { repo: nameOf(lead), path: plans[lead]?.path ?? '' }
     const s = seed
       ? {
-          prompt: buildPrompt(ticket, [leadTarget, ...done.map((p) => ({ repo: nameOf(p), path: rows[p].dir ?? '' }))], branch),
+          prompt: buildPrompt(ticket, [target(lead, plans[lead]?.path ?? ''), ...done.map((p) => target(p, rows[p].dir ?? ''))]),
           addDirs: done.map((p) => rows[p].dir ?? ''),
         }
       : { prompt: '', addDirs: [] }
     setRows((r) => ({ ...r, [lead]: { state: 'running' } }))
-    api.StartRepo(lead, branch, name, s).then(
+    api.StartRepo(lead, branchOf(lead), name, s).then(
       (dir) => onDone(dir, done.length + 1),
       (e) => setRows((r) => ({ ...r, [lead]: { state: 'failed', err: errText(e) } })),
     )
@@ -476,7 +481,7 @@ export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current:
       : runRepo(p)
 
   const n = ticked.length
-  const prompt = buildPrompt(ticket, targets, branch)
+  const prompt = buildPrompt(ticket, targets)
   const command = ['claude --permission-mode plan', ...others.map((p) => '--add-dir ' + (plans[p]?.path ?? ''))].join(' \\\n  ')
 
   return (
@@ -515,23 +520,26 @@ export function StartWork(props: { snap: main.Snapshot; ticket: Ticket; current:
                       </label>
                       <input type="radio" name="lead" aria-label={`Make ${r.name} the lead`} checked={on && r.path === lead} disabled={!on} onChange={() => setLead(r.path)} />
                     </div>
+                    {on && (
+                      <input
+                        className="repo-branch"
+                        aria-label={`${r.name} branch`}
+                        value={branchOf(r.path)}
+                        onChange={(e) => setEdits((b) => ({ ...b, [r.path]: e.target.value }))}
+                        spellCheck={false}
+                      />
+                    )}
                     {why && <p className="err">{why}</p>}
                   </div>
                 )
               })}
             </div>
-            <div className="cols">
-              <label>
-                <span>
-                  Branch <small>{ticket.kind === 'issue' ? 'from Linear' : 'suggested from the project name'}</small>
-                </span>
-                <input value={branch} onChange={(e) => setBranch(e.target.value)} spellCheck={false} />
-              </label>
-              <label className="name">
-                <span>Worktree name</span>
-                <input value={name} onChange={(e) => setName(e.target.value)} spellCheck={false} />
-              </label>
-            </div>
+            <label>
+              <span>
+                Worktree name <small>the same folder name in every repo</small>
+              </span>
+              <input value={name} onChange={(e) => setName(e.target.value)} spellCheck={false} />
+            </label>
             {lead && (
               <label className="check">
                 <input type="checkbox" checked={seed} onChange={() => setSeed(!seed)} />

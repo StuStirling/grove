@@ -199,9 +199,13 @@ like `ENG-412` goes straight to that issue. An issue whose branch is already
 checked out says so, and ↩ goes to that worktree. ⌘↩ opens the pick in Linear.
 
 Picking one opens **Start work**: tick the repos it touches and choose the
-**lead**. Each ticked repo gets a worktree on the same branch (an issue's branch
-from Linear; a project's is suggested from its name), using that repo's own
-`worktree_root`, `base` and `setup`. A branch that exists already, locally or on
+**lead**. Each ticked repo gets a worktree of the same name on its own branch,
+editable on its row: `b/MON-4232-short-title` for an issue with a `Bug…` label,
+else `f/MON-4232-short-title`. For a project, each repo takes the project's first
+open issue carrying one of its `linear_labels` (default: the repo's name, so an
+`iOS` repo picks the `iOS` issue), falling back to `f/<project-name>`. Each uses
+that repo's own `worktree_root`, `base` and `setup`. Deleting one of these
+worktrees offers to delete the others of the same name too. A branch that exists already, locally or on
 the remote, is checked out; one already checked out in a worktree reuses it; and
 a folder in the way shows on the repo's row before anything is created. The
 other repos are created first, then the lead, whose Claude (its first Claude
@@ -238,6 +242,7 @@ panes         = ["claude", ""]            # first = left pane; rest = tabs in a 
 worktree_root = "~/code/myrepo-worktrees" # where New Worktree creates <root>/<intention> (default: <repo>-worktrees beside the repo)
 base          = "origin/main"             # new-branch start-point, fetched if it's a remote ref (default: the remote's default branch)
 setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane after creating
+linear_labels = ["Backend"]               # optional: Linear labels of this repo's issues in a project (default: the repo's name)
 
 # [[workspace]] = a manual one-off entry (not a git worktree, so not deletable).
 # [[workspace]]

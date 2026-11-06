@@ -14,15 +14,16 @@ import (
 
 // LinearIssue is an issue as grove shows it: Linear's nested fields flattened.
 type LinearIssue struct {
-	ID          string `json:"id"` // identifier, e.g. "ENG-412"
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	URL         string `json:"url"`
-	BranchName  string `json:"branchName"`
-	State       string `json:"state"`     // workflow state name, e.g. "In Progress"
-	StateType   string `json:"stateType"` // triage|backlog|unstarted|started|completed|canceled
-	Team        string `json:"team"`      // team key, e.g. "ENG"
-	Project     string `json:"project"`   // project name, "" for none
+	ID          string   `json:"id"` // identifier, e.g. "ENG-412"
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	URL         string   `json:"url"`
+	BranchName  string   `json:"branchName"`
+	State       string   `json:"state"`     // workflow state name, e.g. "In Progress"
+	StateType   string   `json:"stateType"` // triage|backlog|unstarted|started|completed|canceled
+	Team        string   `json:"team"`      // team key, e.g. "ENG"
+	Project     string   `json:"project"`   // project name, "" for none
+	Labels      []string `json:"labels"`    // label names, e.g. "Android", "Bug: In Production"
 }
 
 // LinearProject is a project as grove shows it.
@@ -59,7 +60,7 @@ var linearHTTP = &http.Client{Timeout: 15 * time.Second}
 // Search results are IssueSearchResult / ProjectSearchResult, not Issue /
 // Project, so the selections are shared as text rather than as fragments.
 const (
-	issueFields   = `identifier title description url branchName state { name type } team { key } project { name }`
+	issueFields   = `identifier title description url branchName state { name type } team { key } project { name } labels { nodes { name } }`
 	projectFields = `id name description url progress targetDate status { name type }`
 
 	qViewer = `query { viewer { name } }`
@@ -131,6 +132,7 @@ type rawIssue struct {
 	State                                           struct{ Name, Type string }
 	Team                                            struct{ Key string }
 	Project                                         *struct{ Name string }
+	Labels                                          struct{ Nodes []struct{ Name string } }
 }
 
 type rawProject struct {
@@ -145,6 +147,9 @@ func toIssue(r rawIssue) LinearIssue {
 		State: r.State.Name, StateType: r.State.Type, Team: r.Team.Key}
 	if r.Project != nil {
 		i.Project = r.Project.Name
+	}
+	for _, l := range r.Labels.Nodes {
+		i.Labels = append(i.Labels, l.Name)
 	}
 	return i
 }

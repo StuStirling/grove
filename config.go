@@ -34,6 +34,7 @@ type Repo struct {
 	WorktreeRoot string   `toml:"worktree_root,omitempty" json:"worktreeRoot"` // base dir for newly created worktrees
 	Base         string   `toml:"base,omitempty" json:"base"`                  // start-point for new branches, default "origin/develop"
 	Setup        string   `toml:"setup,omitempty" json:"setup"`                // command run in the shell pane after creating a worktree
+	LinearLabels []string `toml:"linear_labels,omitempty" json:"linearLabels"` // Linear labels of this repo's issues, e.g. ["Android"]; default its name
 	Config       string   `toml:"-" json:"-"`                                  // path of the config file it came from
 }
 

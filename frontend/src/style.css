@@ -235,7 +235,7 @@ button kbd { margin-left: 6px; background: transparent; }
 .mark.failed { color: var(--danger); }
 .mark.skipped { color: var(--muted); }
 .repo-row .rm-actions { margin-left: 24px; }
-.start .cols label.name { flex: 0 1 170px; }
+.form .repo-row input.repo-branch { display: block; width: calc(100% - 24px); margin: 5px 0 0 24px; font: 12px ui-monospace, Menlo, monospace; }
 .form label.check { flex-direction: row; align-items: flex-start; gap: 8px; }
 .form label.check span { color: var(--text); font-size: 13px; }
 .prompt { margin: 0 0 4px 22px; }

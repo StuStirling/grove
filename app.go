@@ -66,10 +66,11 @@ type addedRepo struct {
 
 // RepoInfo is a repo new worktrees can be created in.
 type RepoInfo struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Added  bool   `json:"added"`  // added to the window (removable), not its own
-	Config string `json:"config"` // its config file: removing the repo takes out all it lists
+	Name   string   `json:"name"`
+	Path   string   `json:"path"`
+	Added  bool     `json:"added"`  // added to the window (removable), not its own
+	Config string   `json:"config"` // its config file: removing the repo takes out all it lists
+	Labels []string `json:"labels"` // Linear labels that pick its issue in a project
 }
 
 // RepoInit is a repo with no config yet, as the setup prompt shows it: the
@@ -415,7 +416,7 @@ func (a *App) State() Snapshot {
 	repos := make([]RepoInfo, len(cfg.Repo))
 	for i, r := range cfg.Repo {
 		// merged puts the window's own repos first.
-		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(own.Repo), Config: r.Config}
+		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(own.Repo), Config: r.Config, Labels: r.LinearLabels}
 	}
 	var init *RepoInit
 	if own.Missing {
@@ -485,6 +486,16 @@ func (a *App) SaveSettings(path string, cfg Config, version string) error {
 	}
 	if fileVersion(data) != version {
 		return errors.New("the config file changed on disk since settings opened: reopen settings to see the change")
+	}
+	// The settings field keeps labels as typed, "Android, Backend"; the file gets them trimmed.
+	for i := range cfg.Repo {
+		var ls []string
+		for _, l := range cfg.Repo[i].LinearLabels {
+			if l = strings.TrimSpace(l); l != "" {
+				ls = append(ls, l)
+			}
+		}
+		cfg.Repo[i].LinearLabels = ls
 	}
 	if err := writeConfig(path, cfg); err != nil {
 		return err
@@ -1056,6 +1067,7 @@ func runGUI(initial string, setup bool) {
 		OnBeforeClose:    a.beforeClose,
 		OnShutdown:       a.shutdown,
 		Bind:             []any{a},
+		DragAndDrop:      &options.DragAndDrop{EnableFileDrop: true},
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{Title: "grove " + version, Message: "A git-worktree switcher.", Icon: icon},
 		},

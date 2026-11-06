@@ -13,7 +13,9 @@ import { LINEAR_REJECTED, type Ticket } from './start'
 
 // Worktrees are keyed by dir everywhere: two repos in one window can share
 // worktree names.
-type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; resolve: (yes: boolean) => void }
+// alt adds a third answer, e.g. "All 3"; Yes then reads yes (e.g. "Only this one").
+type Alt = { note: string; yes: string; alt: string }
+type Confirm = { kind: 'confirm'; title: string; detail?: string; danger?: boolean; alt?: Alt; resolve: (yes: boolean | 'alt') => void }
 type Modal =
   | { kind: 'new' | 'checkout'; repo: string }
   | { kind: 'settings'; config: string }
@@ -139,8 +141,8 @@ export default function App() {
     }
   }
 
-  const confirm = (title: string, detail?: string, danger?: boolean) =>
-    new Promise<boolean>((resolve) => setModal({ kind: 'confirm', title, detail, danger, resolve }))
+  const confirm = (title: string, detail?: string, danger?: boolean, alt?: Alt) =>
+    new Promise<boolean | 'alt'>((resolve) => setModal({ kind: 'confirm', title, detail, danger, alt, resolve }))
 
   // openWs starts the panes of the workspace at dir if needed and switches to it.
   async function openWs(dir: string) {
@@ -191,11 +193,20 @@ export default function App() {
 
   // Removal reports in the worktree's own row, not the status bar, and doesn't
   // block other actions: several can run at once.
+  // Work started across repos leaves a worktree of the same name in each, so
+  // deleting one offers to delete them all.
   async function deleteWs(ws: main.WorkspaceInfo) {
+    let targets = [ws]
     // A manual [[workspace]] isn't a worktree: Remove refuses it, in its row.
-    if (ws.repoPath && !(await confirm(`Delete worktree ${ws.name}?`, `Removes ${ws.dir} and stops its panes.`, true))) return
-    setRemovals((rs) => rm.start(rs, ws, listed))
-    await removeRow(ws.dir, false)
+    if (ws.repoPath) {
+      const sibs = rm.siblings(ws, all).filter((w) => rm.usable(removals[w.dir]))
+      const alt = sibs.length ? { note: `Also in this window: ${sibs.map((w) => w.name).join(', ')}.`, yes: 'Only this one', alt: `All ${sibs.length + 1}` } : undefined
+      const answer = await confirm(`Delete worktree ${ws.name}?`, `Removes ${ws.dir} and stops its panes.`, true, alt)
+      if (!answer) return
+      if (answer === 'alt') targets = [ws, ...sibs]
+    }
+    setRemovals((rs) => targets.reduce((acc, w) => rm.start(acc, w, listed), rs))
+    await Promise.all(targets.map((w) => removeRow(w.dir, false)))
   }
 
   async function removeRow(dir: string, force: boolean) {
@@ -799,7 +810,7 @@ export default function App() {
 function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => ref.current?.focus(), [])
-  const answer = (yes: boolean) => {
+  const answer = (yes: boolean | 'alt') => {
     close()
     m.resolve(yes)
   }
@@ -809,6 +820,9 @@ function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
     if (k === 'y' || (k === 'enter' && !m.danger && e.target === e.currentTarget)) {
       e.preventDefault()
       answer(true)
+    } else if (k === 'a' && m.alt) {
+      e.preventDefault()
+      answer('alt')
     } else if (k === 'n' || k === 'escape') {
       e.preventDefault()
       answer(false)
@@ -819,13 +833,19 @@ function ConfirmDialog({ m, close }: { m: Confirm; close: () => void }) {
       <div className="dialog" role="dialog" tabIndex={-1} ref={ref} onKeyDown={onKey} onBlur={keepFocus}>
         <h2>{m.title}</h2>
         {m.detail && <p>{m.detail}</p>}
+        {m.alt && <p>{m.alt.note}</p>}
         <div className="buttons">
           <button onClick={() => answer(false)}>
             No <kbd>N</kbd>
           </button>
           <button className={m.danger ? 'danger' : 'primary'} onClick={() => answer(true)}>
-            Yes <kbd>{m.danger ? 'Y' : 'Y / ↩'}</kbd>
+            {m.alt?.yes ?? 'Yes'} <kbd>{m.danger ? 'Y' : 'Y / ↩'}</kbd>
           </button>
+          {m.alt && (
+            <button className={m.danger ? 'danger' : 'primary'} onClick={() => answer('alt')}>
+              {m.alt.alt} <kbd>A</kbd>
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1169,6 +1189,17 @@ function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () =
                       Setup command <small>runs in the shell pane after creating a worktree</small>
                     </span>
                     <input value={r.setup ?? ''} onChange={set((c, v) => (c.repo[i].setup = v))} placeholder="e.g. ./scripts/bootstrap.sh" spellCheck={false} />
+                  </label>
+                  <label>
+                    <span>
+                      Linear labels <small>pick this repo's issue in a project, comma separated</small>
+                    </span>
+                    <input
+                      value={(r.linearLabels ?? []).join(',')}
+                      onChange={set((c, v) => (c.repo[i].linearLabels = v ? v.split(',') : []))} // trimmed on save
+                      placeholder="the repo's name, e.g. Android"
+                      spellCheck={false}
+                    />
                   </label>
                 </section>
               ))}
