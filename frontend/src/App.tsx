@@ -6,7 +6,7 @@ import { WorkspaceHeader, WorkspaceView, terms } from './Panes'
 import { Sidebar, sidebarWidth, type RemovalAction } from './Sidebar'
 import * as rm from './removal'
 import { groups, numbered, projectKey } from './repos'
-import { loadOverrides, mains, membership, projectNames, prune, saveOverrides } from './projects'
+import { loadOverrides, mains, membership, projectNames, setOverride } from './projects'
 import { cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { errText, keepFocus, key } from './util'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
@@ -330,15 +330,7 @@ export default function App() {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(next))
   }
 
-  // Project overrides are saved as they change, and dropped with their worktree.
-  useEffect(() => saveOverrides(overrides), [overrides])
-  useEffect(() => {
-    if (!snap) return
-    setOverrides((o) => {
-      const kept = prune(o, snap.workspaces ?? [])
-      return Object.keys(kept).length === Object.keys(o).length ? o : kept
-    })
-  }, [snap])
+  const putInProject = (dir: string, name: string | null) => setOverrides(setOverride(dir, name))
 
   // A worktree going with the repo (from its config) that is mid-removal holds up
   // taking the repo out of the window, so the removal's outcome still has a row
@@ -677,7 +669,7 @@ export default function App() {
         collapsed={collapsed}
         onNewIn={newIn}
         onToggle={toggleRepo}
-        onProject={(dir, name) => setOverrides((o) => ({ ...o, [dir]: name }))}
+        onProject={putInProject}
         onNewProject={(dir) => !busy && setModal({ kind: 'project', dir })}
         onReveal={reveal}
         onSettings={settingsFor}
@@ -764,7 +756,7 @@ export default function App() {
           taken={projectNames(member)}
           onCancel={() => setModal(null)}
           onDone={(name) => {
-            setOverrides((o) => ({ ...o, [modal.dir]: name }))
+            putInProject(modal.dir, name)
             setModal(null)
           }}
         />

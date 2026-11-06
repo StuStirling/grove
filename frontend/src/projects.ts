@@ -50,27 +50,26 @@ export const projectNames = (member: Map<string, string>) => [...new Set(member.
 // project's name.
 export const rowName = (w: main.WorkspaceInfo, project: string) => (folder(w.dir) === project ? w.repo : `${w.repo} · ${folder(w.dir)}`)
 
-// prune drops overrides for worktrees that are gone. No rows means nothing has
-// loaded, not that every worktree went, so it keeps them all.
-export function prune(overrides: Overrides, all: main.WorkspaceInfo[]): Overrides {
-  if (!all.length) return overrides
-  const dirs = new Set(all.map((w) => w.dir))
-  return Object.fromEntries(Object.entries(overrides).filter(([dir]) => dirs.has(dir)))
-}
-
 export function loadOverrides(): Overrides {
   try {
     const v = JSON.parse(localStorage.getItem(KEY) ?? '{}')
-    return v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+    // A value that isn't a name or null (hand-edited, say) would break the filter.
+    return Object.fromEntries(Object.entries(v).filter(([, p]) => p === null || typeof p === 'string')) as Overrides
   } catch {
     return {}
   }
 }
 
-export function saveOverrides(o: Overrides) {
+// setOverride saves one worktree's override over what is stored now, not this
+// window's copy: windows share the key, each showing other repos' worktrees.
+// Entries for worktrees that are gone stay; keyed by dir, they match nothing.
+export function setOverride(dir: string, name: string | null): Overrides {
+  const o = { ...loadOverrides(), [dir]: name }
   try {
     localStorage.setItem(KEY, JSON.stringify(o))
   } catch {
-    // ponytail: not saved this time (private mode, quota); the next change tries again
+    // ponytail: not saved (private mode, quota); this window still shows it
   }
+  return o
 }

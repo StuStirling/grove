@@ -23,7 +23,8 @@ When one piece of work spans several repos (typically started with ⌘L), show i
 - **Derived:** worktrees with the same folder name (the last element of `dir`) in two or more of the window's repos form a project named after that folder. This is the rule `siblings()` in `removal.ts` already uses. A repo's main checkout never counts. It is the repo's first worktree in the snapshot, because `git worktree list` lists it first.
 - **Overrides:** `grove.projects` in `localStorage` maps a worktree dir to a project name (put it in that project, whatever its folder is called) or to `null` (never put it in a project). An override beats the folder-name rule.
 - **Size:** a project created by an override may have a single member. A derived project needs members in two or more repos, counted after `null` overrides are applied. When it drops below that, the group dissolves and its remaining worktree goes back to its repo group.
-- **Pruning:** overrides for dirs no longer in the snapshot are dropped when a snapshot arrives. This applies only once a snapshot has loaded, never to an empty or failed one.
+- **Saving:** each change is written over what is stored at that moment, not over this window's copy, because every grove window shares the key and shows other repos' worktrees. Overrides for worktrees that are gone are kept. They are keyed by dir, so they match nothing. Pruning them by snapshot would delete other windows' overrides, and the overrides of a repo that failed to list once.
+- **Loading:** values other than a name or `null` are dropped.
 
 Renaming and deleting a project are out of scope. A project goes away when its members are removed from it or deleted.
 
@@ -63,11 +64,10 @@ All frontend. No Go or binding changes.
 - **`projects.ts` (new, pure):**
   - `type Overrides = Record<string, string | null>`
   - `membership(all, overrides): Map<string, string>`, dir to project name.
-  - `prune(overrides, all): Overrides`.
   - `mains(all): Set<string>`, the dirs of each repo's main checkout (its first row in the snapshot). Used by `membership` and by the `main` tag.
-  - `loadOverrides()` / `saveOverrides()`, wrapping `localStorage` in try/catch like the other keys.
+  - `loadOverrides()` and `setOverride(dir, name)`, wrapping `localStorage` in try/catch like the other keys.
 - **`repos.ts`:** `Group` becomes `{ repo: RepoInfo | null; project?: string; rows }`. `groups()` takes the membership map and builds project groups first. `matches()` also takes the row's project name. It exports `numbered(...)` for the ⌘1–9 order.
-- **`App.tsx`:** holds the overrides state, prunes it on each snapshot, passes membership into `groups()`, switches ⌘1–9 to `numbered`, and handles the New project… dialog.
+- **`App.tsx`:** holds the overrides state, passes membership into `groups()`, switches ⌘1–9 to `numbered`, and handles the New project… dialog.
 - **`Sidebar.tsx`:** project headers and their menu, row names inside projects, the row-menu items, the `main` tag, numbering from `numbered`.
 - **`style.css`:** the project header colour and the `main` tag.
 
@@ -79,7 +79,8 @@ All frontend. No Go or binding changes.
   - an override adds a worktree with a different folder name
   - a `null` override removes a derived member, and a derived project left with one repo dissolves
   - a one-member override project stays
-  - pruning drops missing dirs and keeps the rest
+  - corrupt or wrongly typed saved values are dropped
+  - `setOverride` keeps entries other windows stored
 - **`repos.test.ts`:**
   - project groups come first, sorted
   - members are left out of their repo groups

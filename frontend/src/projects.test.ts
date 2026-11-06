@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { main } from '../wailsjs/go/models'
-import { loadOverrides, mains, membership, projectNames, prune, rowName } from './projects.ts'
+import { loadOverrides, mains, membership, projectNames, rowName, setOverride } from './projects.ts'
 
 const ws = (repoPath: string, folder: string) =>
   ({ name: folder, branch: 'b-' + folder, dir: `${repoPath || '/manual'}/${folder}`, repo: repoPath.slice(1), repoPath }) as main.WorkspaceInfo
@@ -48,12 +48,6 @@ test('rowName shows the repo, and the folder when it differs from the project', 
   assert.equal(rowName(ws('/a', 'spike'), 'eng-1'), 'a · spike')
 })
 
-test('prune drops missing dirs, keeps the rest, and leaves everything when there are no rows', () => {
-  const o = { '/a/spike': 'x', '/gone': null }
-  assert.deepEqual(prune(o, rows), { '/a/spike': 'x' })
-  assert.deepEqual(prune(o, []), o)
-})
-
 test('corrupt saved overrides load as empty', () => {
   const stored = (v: string) => Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => v, setItem() {} } })
   stored('{nope')
@@ -62,4 +56,13 @@ test('corrupt saved overrides load as empty', () => {
   assert.deepEqual(loadOverrides(), {})
   stored('{"/a/spike":"x"}')
   assert.deepEqual(loadOverrides(), { '/a/spike': 'x' })
+  stored('{"/a/spike":"x","/a/eng-1":null,"/b/eng-1":5,"/c/eng-1":true}')
+  assert.deepEqual(loadOverrides(), { '/a/spike': 'x', '/a/eng-1': null }, 'values that are not a name or null are dropped')
+})
+
+test("setOverride writes one worktree's change over what is stored, keeping other windows' entries", () => {
+  let saved = '{"/other/window":"theirs"}'
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => saved, setItem: (_: string, v: string) => (saved = v) } })
+  assert.deepEqual(setOverride('/a/spike', 'mine'), { '/other/window': 'theirs', '/a/spike': 'mine' })
+  assert.deepEqual(JSON.parse(saved), { '/other/window': 'theirs', '/a/spike': 'mine' })
 })
