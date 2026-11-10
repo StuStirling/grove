@@ -310,6 +310,7 @@ export namespace main {
 	    kind: string;
 	    name: string;
 	    claude: string;
+	    since: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Pane(source);
@@ -322,6 +323,7 @@ export namespace main {
 	        this.kind = source["kind"];
 	        this.name = source["name"];
 	        this.claude = source["claude"];
+	        this.since = source["since"];
 	    }
 	}
 	export class RemoveResult {

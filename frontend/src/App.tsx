@@ -13,6 +13,7 @@ import { errText, keepFocus, key } from './util'
 import { Menu, type MenuItem } from './Menu'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
 import { LINEAR_REJECTED, type Ticket } from './start'
+import { nextNeeding } from './attention'
 
 // Worktrees are keyed by dir everywhere: two repos in one window can share
 // worktree names.
@@ -172,6 +173,13 @@ export default function App() {
     } catch (e) {
       say(errText(e), true)
     }
+  }
+
+  // goToTab switches to a worktree's tab: ⌘J, or a clicked notification.
+  async function goToTab(dir: string, id: string) {
+    await openWs(dir)
+    setLayout(dir, (l) => activate(l, id))
+    focusNow()
   }
 
   function focusList() {
@@ -478,6 +486,10 @@ export default function App() {
         return newTab(sel?.dir, 'claude')
       case 'new-shell':
         return newTab(sel?.dir, 'shell')
+      case 'next-attention': {
+        const t = nextNeeding(all, selTab)
+        return t ? goToTab(t.dir, t.id) : say('no Claude needs you')
+      }
       case 'next-tab':
         return change((l) => cycle(l, 1))
       case 'prev-tab':
@@ -512,17 +524,23 @@ export default function App() {
   }
 
   // Backend events are subscribed once; they call the latest render's handlers.
-  const live = useRef({ dispatch, openWs, reload, refresh, busy, modal, selTab })
-  live.current = { dispatch, openWs, reload, refresh, busy, modal, selTab }
+  const live = useRef({ dispatch, openWs, goToTab, reload, refresh, busy, modal, selTab })
+  live.current = { dispatch, openWs, goToTab, reload, refresh, busy, modal, selTab }
   useEffect(() => {
     const offs = [
       EventsOn('changed', () => live.current.refresh()),
       EventsOn('menu', (a: string) => live.current.dispatch(a)),
       EventsOn('open', (dir: string) => live.current.openWs(dir)),
+      EventsOn('goto-tab', (dir: string, id: string) => live.current.goToTab(dir, id)),
     ]
+    // Only a grove in the background notifies.
+    api.SetFocused(document.hasFocus())
+    const onBlur = () => api.SetFocused(false)
+    window.addEventListener('blur', onBlur)
     // Rescan when the window regains focus, so worktrees made elsewhere appear;
     // the tab in front of you has now been seen.
     const onFocus = () => {
+      api.SetFocused(true)
       if (live.current.selTab) api.SeenTab(live.current.selTab)
       if (!live.current.busy && !live.current.modal) live.current.reload(false)
     }
@@ -549,6 +567,7 @@ export default function App() {
     return () => {
       offs.forEach((off) => off())
       window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
       window.removeEventListener('keydown', onKey, true)
     }
   }, [])

@@ -122,6 +122,7 @@ Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (pl
 | Go to worktree (type to filter, ↑↓ ↩) | ⌘P | New Claude tab | ⌘T |
 | Worktree 1–9 | ⌘1–⌘9 | New shell | ⌘⇧T |
 | Next / previous open worktree | ⌘⇧] / ⌘⇧[ | Next / previous tab | ⌘] / ⌘[ |
+| Next Claude needing you | ⌘J | | |
 | New worktree… | ⌘N | Split right | ⌘D |
 | New worktree from branch… | ⌘⇧N | Pane left / right | ⌘⌥← / ⌘⌥→ |
 | Close worktree (stop its tabs) | ⌘W | Zoom pane | ⌘⇧↩ |
@@ -172,7 +173,11 @@ in a collapsed repo, but ⌘1–⌘9 don't open ones it hides.
 ## Claude Code status
 
 The sidebar marks a worktree when its Claude Code needs you: **◆ yellow** for a
-permission prompt, **◆ purple** when it has finished, **◌** while it works. The
+permission prompt, **◆ purple** when it has finished, **◌** while it works. **⌘J** goes to the tab
+that has wanted you longest, permission prompts first; press it again for the
+next. While grove is in the background, a notification says which worktree's
+Claude finished or is waiting (click it to go to the tab), and the Dock icon
+counts the tabs that want you. macOS asks once whether grove may notify. The
 marks come from Claude Code hooks calling `grove state`. Panes export `GROVE_BIN`
 (the running grove's own binary), so the hooks reach the right grove whatever is
 on your PATH, and do nothing outside a grove pane. Merge this into the `hooks` of

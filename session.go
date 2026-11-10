@@ -24,6 +24,7 @@ type Pane struct {
 	Kind   string `json:"kind"`   // "claude" | "shell" (a login shell or any other command)
 	Name   string `json:"name"`   // base tab label: "claude", "zsh", "lazygit", ...
 	Claude string `json:"claude"` // this pane's Claude Code mark: "working" | "waiting" | "idle" | ""
+	Since  int64  `json:"since"`  // when Claude last changed, in Unix ms: ⌘J goes to the oldest first
 }
 
 // pane is a Pane plus its process. The process starts lazily, on the frontend's
@@ -50,6 +51,8 @@ type sessions struct {
 	nextID int
 	sock   string // exported to panes as GROVE_SOCK, for `grove state`
 	emit   func(event string, data ...any)
+	alert  func(p Pane, ws, dir string) // optional: a Claude now wants you (finished, or waiting)
+	change func()                       // optional: after any change, as the frontend's "changed"
 }
 
 func newSessions(sock string, emit func(string, ...any)) *sessions {
@@ -62,7 +65,12 @@ func newSessions(sock string, emit func(string, ...any)) *sessions {
 }
 
 // changed tells the frontend to refetch state (open workspaces, panes, marks).
-func (s *sessions) changed() { s.emit("changed") }
+func (s *sessions) changed() {
+	s.emit("changed")
+	if s.change != nil {
+		s.change()
+	}
+}
 
 // ensure opens a workspace's panes (without starting them) if it isn't open, and
 // returns its panes. setup, when set, is typed into the shell pane on start.
@@ -410,8 +418,18 @@ func (s *sessions) setClaude(id, state string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("no pane %s", id)
 	}
+	// A turn finishing or a new wait wants you. A session starting idle, or the
+	// same state reported again, does not.
+	alert := (state == "idle" && p.Claude == "working") || (state == "waiting" && p.Claude != "waiting")
+	if state != p.Claude {
+		p.Since = time.Now().UnixMilli()
+	}
 	p.Claude = state
+	pub, ws, dir := p.Pane, p.ws, p.dir
 	s.mu.Unlock()
+	if alert && s.alert != nil {
+		s.alert(pub, ws, dir)
+	}
 	s.changed()
 	return nil
 }
@@ -429,6 +447,28 @@ func (s *sessions) seen(id string) {
 	if cleared {
 		s.changed()
 	}
+}
+
+// attention counts the tabs whose Claude wants you: the Dock badge.
+func (s *sessions) attention() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, p := range s.panes {
+		if p.Claude == "idle" || p.Claude == "waiting" {
+			n++
+		}
+	}
+	return n
+}
+
+// marked reports whether pane id still has a mark that wants you, so a
+// notification for it stays up.
+func (s *sessions) marked(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.panes[id]
+	return p != nil && (p.Claude == "idle" || p.Claude == "waiting")
 }
 
 // busy reports whether closing a pane would interrupt something: Claude Code

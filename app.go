@@ -39,6 +39,7 @@ type App struct {
 	cfgErr string
 	init   *RepoInit // the setup prompt, while own is Missing
 	sess   *sessions
+	att    attention // notifications and the Dock badge
 
 	// gitMu serialises branch deletions (Remove's and DeleteBranch's): Wails runs
 	// each call on its own goroutine, and concurrent `git branch -d` runs fight
@@ -285,6 +286,7 @@ func (a *App) emit(event string, data ...any) {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	close(a.ready)
+	a.startAttention(ctx)
 	a.setMenu()
 }
 
@@ -894,6 +896,7 @@ var shortcuts = []shortcut{
 	{"Go", "Go to Worktree…", "goto", "p", cmdMod},
 	{"Go", "Next Worktree", "next-ws", "]", shiftMod},
 	{"Go", "Previous Worktree", "prev-ws", "[", shiftMod},
+	{"Go", "Next Claude Needing You", "next-attention", "j", cmdMod},
 	{"Go", "", "", "", nil},
 	{"Go", "Next Tab", "next-tab", "]", cmdMod},
 	{"Go", "Previous Tab", "prev-tab", "[", cmdMod},

@@ -72,6 +72,8 @@ export function SaveSettings(arg1:string,arg2:main.Config,arg3:string):Promise<v
 
 export function SeenTab(arg1:string):Promise<void>;
 
+export function SetFocused(arg1:boolean):Promise<void>;
+
 export function Settings(arg1:string):Promise<main.SettingsFile>;
 
 export function Size(arg1:string,arg2:number,arg3:number):Promise<void>;
