@@ -22,6 +22,10 @@ export function Checkout(arg1, arg2, arg3) {
   return window['go']['main']['App']['Checkout'](arg1, arg2, arg3);
 }
 
+export function ClaudeHooks() {
+  return window['go']['main']['App']['ClaudeHooks']();
+}
+
 export function Close(arg1) {
   return window['go']['main']['App']['Close'](arg1);
 }
@@ -56,6 +60,10 @@ export function GetLinearProject(arg1) {
 
 export function InitRepo(arg1, arg2, arg3) {
   return window['go']['main']['App']['InitRepo'](arg1, arg2, arg3);
+}
+
+export function InstallClaudeHooks() {
+  return window['go']['main']['App']['InstallClaudeHooks']();
 }
 
 export function LinearAccount() {

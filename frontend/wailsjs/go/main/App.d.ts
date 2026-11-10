@@ -12,6 +12,8 @@ export function Branches(arg1:string):Promise<Array<string>>;
 
 export function Checkout(arg1:string,arg2:string,arg3:string):Promise<string>;
 
+export function ClaudeHooks():Promise<boolean>;
+
 export function Close(arg1:string):Promise<void>;
 
 export function CloseTab(arg1:string):Promise<void>;
@@ -29,6 +31,8 @@ export function GetLinearIssue(arg1:string):Promise<main.LinearIssue>;
 export function GetLinearProject(arg1:string):Promise<main.LinearProject>;
 
 export function InitRepo(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function InstallClaudeHooks():Promise<void>;
 
 export function LinearAccount():Promise<main.LinearAccount>;
 

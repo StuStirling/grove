@@ -1345,6 +1345,8 @@ function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () =
               ))}
             </>
           )}
+          <h3>Claude Code</h3>
+          <ClaudeHooksRow />
           <h3>Linear</h3>
           <LinearAccountRow onConnect={onLinearConnect} />
           {err && <p className="err">{err}</p>}
@@ -1399,6 +1401,33 @@ function Help({ snap, close }: { snap: main.Snapshot | null; close: () => void }
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ClaudeHooksRow is the Claude Code section of Settings: whether the hooks
+// behind the sidebar's marks, ⌘J and notifications are installed.
+function ClaudeHooksRow() {
+  const [installed, setInstalled] = useState<boolean | null>(null)
+  const [err, setErr] = useState('')
+  const load = () =>
+    api.ClaudeHooks().then(
+      (ok) => setInstalled(ok),
+      (e) => setErr(errText(e)),
+    )
+  useEffect(() => {
+    load()
+  }, [])
+  const install = () => api.InstallClaudeHooks().then(load, (e) => setErr(errText(e)))
+  return (
+    <div className="field">
+      <span>{installed === null ? (err ? 'Hooks: unknown' : 'Checking…') : installed ? 'Hooks installed ✓' : 'Hooks not installed: no marks, ⌘J or notifications'}</span>
+      {installed === false && (
+        <button type="button" onClick={install}>
+          Install
+        </button>
+      )}
+      {err && <p className="err">{err}</p>}
     </div>
   )
 }

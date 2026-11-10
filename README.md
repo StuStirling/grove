@@ -180,8 +180,12 @@ Claude finished or is waiting (click it to go to the tab), and the Dock icon
 counts the tabs that want you. macOS asks once whether grove may notify. The
 marks come from Claude Code hooks calling `grove state`. Panes export `GROVE_BIN`
 (the running grove's own binary), so the hooks reach the right grove whatever is
-on your PATH, and do nothing outside a grove pane. Merge this into the `hooks` of
-`~/.claude/settings.json` (alongside any hooks you already have):
+on your PATH, and do nothing outside a grove pane. **Settings… (⌘,) ▸ Claude Code ▸
+Install** adds them to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`'s),
+keeping your other settings and hooks; it backs the file up to
+`settings.json.grove.bak` first, and rewrites it with sorted keys. `grove doctor`
+says whether they are installed. To add them by hand, merge this into the `hooks`
+of `~/.claude/settings.json` (alongside any hooks you already have):
 
 ```json
 {

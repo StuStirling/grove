@@ -225,17 +225,23 @@ func readConfig(path string) (*Config, error) {
 // the file are not kept. It writes through a symlink (a dotfiles-managed
 // config), and atomically, so a failed write leaves the file as it was.
 func writeConfig(path string, cfg Config) error {
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
-	}
 	var b bytes.Buffer
 	enc := toml.NewEncoder(&b)
 	enc.Indent = ""
 	if err := enc.Encode(cfg); err != nil {
 		return err
 	}
+	return writeFileAtomic(path, b.Bytes(), 0o644)
+}
+
+// writeFileAtomic replaces the file at path, through a symlink, so a failed
+// write leaves it as it was.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, mode); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {

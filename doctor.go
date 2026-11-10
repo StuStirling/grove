@@ -64,6 +64,16 @@ func doctor() int {
 		fmt.Printf("[opt ] %-12s %s\n", "terminal", "unset: no Terminal in Open With…, `grove open -w` disabled")
 	}
 
+	// Claude Code hooks (optional: only needed for the Claude marks)
+	switch ok, err := hooksInstalled(claudeSettingsPath()); {
+	case err != nil:
+		check("claude hooks", err.Error(), false)
+	case ok:
+		check("claude hooks", claudeSettingsPath(), true)
+	default:
+		fmt.Printf("[opt ] %-12s %s\n", "claude hooks", "not installed: Settings… (⌘,) ▸ Install, for the Claude marks")
+	}
+
 	// keychain (optional: only needed to connect Linear)
 	switch runtime.GOOS {
 	case "darwin":
