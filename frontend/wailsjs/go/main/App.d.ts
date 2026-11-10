@@ -48,6 +48,8 @@ export function OpenRepo():Promise<void>;
 
 export function OpenURL(arg1:string):Promise<void>;
 
+export function OpenWith(arg1:string,arg2:string):Promise<void>;
+
 export function PlanRepo(arg1:string,arg2:string,arg3:string):Promise<main.RepoPlan>;
 
 export function PlanUpdate(arg1:string):Promise<main.UpdatePlan>;

@@ -35,13 +35,14 @@ type Repo struct {
 	Base         string   `toml:"base,omitempty" json:"base"`                  // start-point for new branches, default "origin/develop"
 	Setup        string   `toml:"setup,omitempty" json:"setup"`                // command run in the shell pane after creating a worktree
 	LinearLabels []string `toml:"linear_labels,omitempty" json:"linearLabels"` // Linear labels of this repo's issues, e.g. ["Android"]; default its name
+	OpenWith     []string `toml:"open_with,omitempty" json:"openWith"`         // apps to open a worktree in (Open With…): macOS app names, else commands with {dir}
 	Config       string   `toml:"-" json:"-"`                                  // path of the config file it came from
 }
 
 // Config is the whole workspaces.toml file.
 type Config struct {
 	// Terminal is a command template for opening a worktree in an external
-	// terminal window ("Open in Terminal", `grove open -w`). {cmd} is replaced
+	// terminal window (Open With…, `grove open -w`). {cmd} is replaced
 	// with a shell started in the worktree and {dir} with the worktree path, e.g.
 	// "ghostty -e {cmd}", "wezterm start -- {cmd}", "kitty {cmd}".
 	Terminal   string      `toml:"terminal,omitempty" json:"terminal"`
@@ -332,7 +333,7 @@ func sampleConfig() string {
 	return `# grove repo-local config (.grove.toml).
 # panes: one command per pane (empty string = plain shell).
 
-# Command to open a worktree in an external terminal ("Open in Terminal",
+# Command to open a worktree in an external terminal (Open With..., cmd-shift-O;
 # 'grove open <name> -w'). {cmd} = a shell in the worktree, {dir} = its path:
 #   macOS: "open -na Ghostty --args --working-directory={dir}"
 #   Linux: "ghostty -e {cmd}"  "wezterm start -- {cmd}"  "kitty {cmd}"  "alacritty -e {cmd}"
@@ -351,6 +352,7 @@ panes         = ["claude", ""]              # first = left pane; rest = tabs in 
 # worktree_root = ""                        # dir for new worktrees; default: <repo>-worktrees beside the repo
 # base          = "origin/main"             # new branch start-point (fetched first); default: the remote's default branch
 setup         = ""                          # e.g. "./scripts/bootstrap.sh": run in the shell pane after create
+# open_with     = ["Visual Studio Code"]    # Open With... (cmd-shift-O): macOS app names, Linux commands ("code {dir}")
 
 # [[workspace]] = a manual one-off entry.
 # [[workspace]]

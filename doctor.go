@@ -57,11 +57,11 @@ func doctor() int {
 		}
 	}
 
-	// terminal (optional: only needed for Open in Terminal / `grove open -w`)
+	// terminal (optional: only needed for Open With… Terminal / `grove open -w`)
 	if cfg.Terminal != "" {
 		check("terminal", cfg.Terminal, true)
 	} else {
-		fmt.Printf("[opt ] %-12s %s\n", "terminal", "unset: Open in Terminal (`grove open -w`) disabled")
+		fmt.Printf("[opt ] %-12s %s\n", "terminal", "unset: no Terminal in Open With…, `grove open -w` disabled")
 	}
 
 	// keychain (optional: only needed to connect Linear)

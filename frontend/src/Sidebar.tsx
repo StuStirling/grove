@@ -49,6 +49,7 @@ export function Sidebar(props: {
   onUpdate: (dir: string) => void
   onReveal: (repoPath: string) => void
   onSettings: (config: string) => void
+  openItems: (w: main.WorkspaceInfo) => MenuItem[] // Open With…'s entries
   onAskRemove: (repoPath: string) => void
   confirm: string | null // the repo whose Remove from window is being confirmed
   onConfirm: (remove: boolean) => void
@@ -66,6 +67,8 @@ export function Sidebar(props: {
       label: `Actions for ${w.name}`,
       at,
       items: [
+        ...props.openItems(w),
+        'divider',
         ...(w.branch ? [{ label: 'Copy branch', onSelect: () => ClipboardSetText(w.branch) }] : []),
         { label: 'Copy path', onSelect: () => ClipboardSetText(w.dir) },
         ...(w.repoPath && w.branch ? ['divider' as const, { label: 'Update from base…', keys: key(snap, 'Update from Base'), onSelect: () => props.onUpdate(w.dir) }] : []),

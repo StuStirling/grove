@@ -10,6 +10,7 @@ import { loadOverrides, mains, membership, projectNames, setOverride } from './p
 import { activate, cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { Update } from './UpdateDialog'
 import { errText, keepFocus, key } from './util'
+import { Menu, type MenuItem } from './Menu'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
 import { LINEAR_REJECTED, type Ticket } from './start'
 
@@ -77,6 +78,8 @@ export default function App() {
   // The repo whose Remove from window is being confirmed in the sidebar, and
   // where focus was when it was asked.
   const [repoConfirm, setRepoConfirm] = useState<{ path: string; back: Element | null } | null>(null)
+  // Open With… (⌘⇧O): the worktree it opens and where its menu shows.
+  const [openMenu, setOpenMenu] = useState<{ w: main.WorkspaceInfo; at: { x: number; y: number } } | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
   const snapSeq = useRef({ asked: 0, shown: 0 })
 
@@ -342,6 +345,17 @@ export default function App() {
   // The repo header menu's actions.
   const newIn = (path: string) => !busy && setModal({ kind: 'new', repo: path })
   const settingsFor = (config: string) => !busy && setModal({ kind: 'settings', config })
+
+  // openItems are Open With…'s entries for w: its repo's open_with apps, then
+  // the external terminal. 1–9 pick them in the menu.
+  const openItems = (w: main.WorkspaceInfo): MenuItem[] => {
+    const done = (p: Promise<void>, where: string) => p.then(() => say(`opened ${w.name} in ${where}`), (e) => say(errText(e), true))
+    const apps = repos.find((r) => r.path === w.repoPath)?.apps ?? []
+    const items: MenuItem[] = apps.map((app) => ({ label: app, onSelect: () => done(api.OpenWith(w.dir, app), app) }))
+    if (snap?.terminal) items.push({ label: 'Terminal', onSelect: () => done(api.OpenInTerminal(w.dir), 'terminal') })
+    if (!items.length) return [{ label: 'Set up in Settings…', onSelect: () => settingsFor(w.config) }]
+    return items.map((it, i) => (it !== 'divider' && i < 9 ? { ...it, keys: String(i + 1) } : it))
+  }
   const reveal = (path: string) => api.Reveal(path).catch((e) => say(errText(e), true))
   function toggleRepo(path: string) {
     const next = collapsed.includes(path) ? collapsed.filter((p) => p !== path) : [...collapsed, path]
@@ -441,8 +455,11 @@ export default function App() {
         )
       case 'update':
         return need((w) => (w.branch ? setModal({ kind: 'update', dir: w.dir }) : say(`${w.name} is not on a branch`)))
-      case 'terminal':
-        return need((w) => api.OpenInTerminal(w.dir).then(() => say(`opened ${w.name} in terminal`), (e) => say(errText(e), true)))
+      case 'open-with':
+        return need((w) => {
+          const r = document.querySelector(`.sidebar li[title="${CSS.escape(w.dir)}"]`)?.getBoundingClientRect()
+          setOpenMenu({ w, at: r ? { x: r.left + 24, y: r.bottom } : { x: innerWidth / 2 - 100, y: 80 } })
+        })
       case 'close':
         return need(closeWs)
       case 'delete':
@@ -695,6 +712,7 @@ export default function App() {
         onUpdate={(dir) => !busy && setModal({ kind: 'update', dir })}
         onReveal={reveal}
         onSettings={settingsFor}
+        openItems={openItems}
         onAskRemove={askRemoveRepo}
         confirm={repoConfirm?.path ?? null}
         onConfirm={answerRemoveRepo}
@@ -827,6 +845,7 @@ export default function App() {
       {modal?.kind === 'update' && all.find((w) => w.dir === modal.dir) && (
         <Update ws={all.find((w) => w.dir === modal.dir)!} onClose={() => setModal(null)} onClaude={() => askClaude(modal.dir)} say={(t) => say(t)} />
       )}
+      {openMenu && <Menu label={`Open ${openMenu.w.name} in…`} at={openMenu.at} items={openItems(openMenu.w)} onClose={() => setOpenMenu(null)} />}
       {modal?.kind === 'help' && <Help snap={snap} close={() => setModal(null)} />}
       {modal?.kind === 'linear-connect' && <ConnectDialog rejected={modal.rejected} onCancel={() => setModal(null)} onDone={() => setModal(modal.after)} />}
       {modal?.kind === 'linear-search' && snap && (
@@ -1289,6 +1308,17 @@ function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () =
                       value={(r.linearLabels ?? []).join(',')}
                       onChange={set((c, v) => (c.repo[i].linearLabels = v ? v.split(',') : []))} // trimmed on save
                       placeholder="the repo's name, e.g. Android"
+                      spellCheck={false}
+                    />
+                  </label>
+                  <label>
+                    <span>
+                      Open with <small>apps for Open With… (⌘⇧O), comma separated</small>
+                    </span>
+                    <input
+                      value={(r.openWith ?? []).join(',')}
+                      onChange={set((c, v) => (c.repo[i].openWith = v ? v.split(',') : []))} // trimmed on save
+                      placeholder={navigator.userAgent.includes('Mac') ? 'e.g. Visual Studio Code, Xcode' : 'e.g. code {dir}'}
                       spellCheck={false}
                     />
                   </label>

@@ -127,7 +127,7 @@ Press **⌘/** in the app for the full list. On Linux, ⌘ is **Ctrl+Shift** (pl
 | Close worktree (stop its tabs) | ⌘W | Zoom pane | ⌘⇧↩ |
 | Delete worktree… | ⌘⌫ | Bigger / smaller / actual text | ⌘= / ⌘- / ⌘0 |
 | Reload worktrees | ⌘R | Newline in Claude Code | ⇧↩ |
-| Open in external terminal | ⌘⇧O | Open link | ⌘-click |
+| Open with an app… | ⌘⇧O | Open link | ⌘-click |
 | Add repository to this window | ⌘O | Select over a mouse-aware app | ⌥-drag |
 | Settings… | ⌘, | Keyboard shortcuts | ⌘/ |
 | Start work from Linear… | ⌘L | Delete to line start | ⌘⌫ |
@@ -148,10 +148,17 @@ New Worktree asks for an **intention** (the worktree dir name), a **branch** and
 Worktree from Branch checks out an existing local or remote branch. Both run the
 repo's `setup` command in the shell pane.
 
+**Open With… (⌘⇧O)** opens the worktree in another app: the repo's `open_with`
+apps (Visual Studio Code, Android Studio, Xcode…), then your external
+`terminal` if one is set. ↩ takes the first, 1–9 pick by number. Xcode gets the
+worktree's `.xcworkspace`, else its `.xcodeproj`, else the folder. A repo with
+neither set offers **Set up in Settings…**. The same apps head a worktree's
+right-click menu.
+
 The sidebar shows the whole name and branch of the worktree you're in, and of any
 row under the pointer; the rest are cut short to fit. Drag the sidebar's right
 edge to resize it (or Tab to the edge and use ←/→); grove remembers the width.
-Right-click a worktree to copy its branch or path, or press ⇧F10 in the worktree
+Right-click a worktree to open it in an app or copy its branch or path, or press ⇧F10 in the worktree
 list for the highlighted one.
 
 Worktrees are listed under a header per repo, with manual `[[workspace]]` entries
@@ -225,7 +232,7 @@ worktrees use the main worktree's). If none is found it falls back to the global
 repo up (see [Quick start](#quick-start)).
 
 ```toml
-# Open a worktree in an external terminal (⌘⇧O, `grove open <name> -w`).
+# Open a worktree in an external terminal (Open With… ⌘⇧O, `grove open <name> -w`).
 # {cmd} = a shell started in the worktree, {dir} = the worktree path.
 #   macOS: "open -na Ghostty --args --working-directory={dir}"
 #          "open -na WezTerm --args start --cwd {dir}"
@@ -243,6 +250,7 @@ worktree_root = "~/code/myrepo-worktrees" # where New Worktree creates <root>/<i
 base          = "origin/main"             # new-branch start-point, fetched if it's a remote ref (default: the remote's default branch)
 setup         = "./scripts/bootstrap.sh"  # optional: run in the shell pane after creating
 linear_labels = ["Backend"]               # optional: Linear labels of this repo's issues in a project (default: the repo's name)
+open_with     = ["Visual Studio Code", "Xcode"] # optional: Open With… (⌘⇧O). macOS: app names (`open -a`); Linux: commands, {dir} = the worktree ("code {dir}")
 
 # [[workspace]] = a manual one-off entry (not a git worktree, so not deletable).
 # [[workspace]]
