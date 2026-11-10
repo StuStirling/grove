@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -91,6 +92,42 @@ func openInTerminal(ws Workspace, terminal string) error {
 	}
 	go func() { _ = c.Wait() }() // reap
 	return nil
+}
+
+// openWith opens dir in app: on macOS app is an application name (`open -a`),
+// elsewhere a command, with {dir} for the path or the path appended.
+func openWith(app, dir string) error {
+	var c *exec.Cmd
+	if runtime.GOOS == "darwin" {
+		c = exec.Command("open", "-a", app, xcodeTarget(app, dir))
+	} else {
+		if !strings.Contains(app, "{dir}") {
+			app += " {dir}"
+		}
+		c = exec.Command("sh", "-c", strings.ReplaceAll(app, "{dir}", shellQuote(dir)))
+	}
+	c.Dir = dir
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go func() { _ = c.Wait() }() // reap
+	return nil
+}
+
+// xcodeTarget is what Xcode should open for dir: its top-level .xcworkspace,
+// else its .xcodeproj, else dir itself (a Swift package, or a folder). Other
+// apps get dir.
+func xcodeTarget(app, dir string) string {
+	if !strings.EqualFold(strings.TrimSuffix(filepath.Base(app), ".app"), "xcode") {
+		return dir
+	}
+	for _, pat := range []string{"*.xcworkspace", "*.xcodeproj"} {
+		if m, _ := filepath.Glob(filepath.Join(dir, pat)); len(m) > 0 {
+			return m[0]
+		}
+	}
+	return dir
 }
 
 // fixPath gives a GUI launched outside a terminal (Finder, Dock) the user's login

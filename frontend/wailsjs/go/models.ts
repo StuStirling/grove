@@ -90,6 +90,7 @@ export namespace main {
 	    base: string;
 	    setup: string;
 	    linearLabels: string[];
+	    openWith: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Repo(source);
@@ -104,6 +105,7 @@ export namespace main {
 	        this.base = source["base"];
 	        this.setup = source["setup"];
 	        this.linearLabels = source["linearLabels"];
+	        this.openWith = source["openWith"];
 	    }
 	}
 	export class Config {
@@ -308,6 +310,7 @@ export namespace main {
 	    kind: string;
 	    name: string;
 	    claude: string;
+	    since: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Pane(source);
@@ -320,6 +323,7 @@ export namespace main {
 	        this.kind = source["kind"];
 	        this.name = source["name"];
 	        this.claude = source["claude"];
+	        this.since = source["since"];
 	    }
 	}
 	export class RemoveResult {
@@ -349,6 +353,7 @@ export namespace main {
 	    added: boolean;
 	    config: string;
 	    labels: string[];
+	    apps: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new RepoInfo(source);
@@ -361,6 +366,7 @@ export namespace main {
 	        this.added = source["added"];
 	        this.config = source["config"];
 	        this.labels = source["labels"];
+	        this.apps = source["apps"];
 	    }
 	}
 	

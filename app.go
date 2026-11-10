@@ -39,6 +39,7 @@ type App struct {
 	cfgErr string
 	init   *RepoInit // the setup prompt, while own is Missing
 	sess   *sessions
+	att    attention // notifications and the Dock badge
 
 	// gitMu serialises branch deletions (Remove's and DeleteBranch's): Wails runs
 	// each call on its own goroutine, and concurrent `git branch -d` runs fight
@@ -71,6 +72,7 @@ type RepoInfo struct {
 	Added  bool     `json:"added"`  // added to the window (removable), not its own
 	Config string   `json:"config"` // its config file: removing the repo takes out all it lists
 	Labels []string `json:"labels"` // Linear labels that pick its issue in a project
+	Apps   []string `json:"apps"`   // open_with: what Open With… offers
 }
 
 // RepoInit is a repo with no config yet, as the setup prompt shows it: the
@@ -284,6 +286,7 @@ func (a *App) emit(event string, data ...any) {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	close(a.ready)
+	a.startAttention(ctx)
 	a.setMenu()
 }
 
@@ -417,7 +420,7 @@ func (a *App) State() Snapshot {
 	repos := make([]RepoInfo, len(cfg.Repo))
 	for i, r := range cfg.Repo {
 		// merged puts the window's own repos first.
-		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(own.Repo), Config: r.Config, Labels: r.LinearLabels}
+		repos[i] = RepoInfo{Name: repoName(r), Path: expandPath(r.Path), Added: i >= len(own.Repo), Config: r.Config, Labels: r.LinearLabels, Apps: r.OpenWith}
 	}
 	var init *RepoInit
 	if own.Missing {
@@ -488,15 +491,10 @@ func (a *App) SaveSettings(path string, cfg Config, version string) error {
 	if fileVersion(data) != version {
 		return errors.New("the config file changed on disk since settings opened: reopen settings to see the change")
 	}
-	// The settings field keeps labels as typed, "Android, Backend"; the file gets them trimmed.
+	// The settings fields keep lists as typed, "Android, Backend"; the file gets them trimmed.
 	for i := range cfg.Repo {
-		var ls []string
-		for _, l := range cfg.Repo[i].LinearLabels {
-			if l = strings.TrimSpace(l); l != "" {
-				ls = append(ls, l)
-			}
-		}
-		cfg.Repo[i].LinearLabels = ls
+		cfg.Repo[i].LinearLabels = trimList(cfg.Repo[i].LinearLabels)
+		cfg.Repo[i].OpenWith = trimList(cfg.Repo[i].OpenWith)
 	}
 	if err := writeConfig(path, cfg); err != nil {
 		return err
@@ -703,6 +701,26 @@ func (a *App) OpenInTerminal(dir string) error {
 	return openInTerminal(ws, a.config().Terminal)
 }
 
+// OpenWith opens the workspace at dir in app, one of its repo's open_with.
+func (a *App) OpenWith(dir, app string) error {
+	ws, ok := a.find(dir)
+	if !ok {
+		return fmt.Errorf("no workspace at %s", dir)
+	}
+	return openWith(app, ws.Dir)
+}
+
+// trimList drops the blanks from a comma-separated settings field and trims the rest.
+func trimList(in []string) []string {
+	var out []string
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // AddedRepo is what Add Repository did: the repo it added, or, for one with no
 // config yet, the setup prompt to show (InitRepo adds it).
 type AddedRepo struct {
@@ -858,7 +876,7 @@ var shortcuts = []shortcut{
 	{"File", "New Claude Tab", "new-claude", "t", cmdMod},
 	{"File", "New Shell", "new-shell", "t", shiftMod},
 	{"File", "", "", "", nil},
-	{"File", "Open in Terminal", "terminal", "o", shiftMod},
+	{"File", "Open With…", "open-with", "o", shiftMod},
 	{"File", "Update from Base…", "update", "u", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "Close Worktree", "close", "w", cmdMod},
@@ -878,6 +896,7 @@ var shortcuts = []shortcut{
 	{"Go", "Go to Worktree…", "goto", "p", cmdMod},
 	{"Go", "Next Worktree", "next-ws", "]", shiftMod},
 	{"Go", "Previous Worktree", "prev-ws", "[", shiftMod},
+	{"Go", "Next Claude Needing You", "next-attention", "j", cmdMod},
 	{"Go", "", "", "", nil},
 	{"Go", "Next Tab", "next-tab", "]", cmdMod},
 	{"Go", "Previous Tab", "prev-tab", "[", cmdMod},

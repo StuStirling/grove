@@ -10,8 +10,10 @@ import { loadOverrides, mains, membership, projectNames, setOverride } from './p
 import { activate, cycle, focusPane, focusedTab, place, split, sync, toggleZoom, type Layout } from './layout'
 import { Update } from './UpdateDialog'
 import { errText, keepFocus, key } from './util'
+import { Menu, type MenuItem } from './Menu'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
 import { LINEAR_REJECTED, type Ticket } from './start'
+import { nextNeeding } from './attention'
 
 // Worktrees are keyed by dir everywhere: two repos in one window can share
 // worktree names.
@@ -77,6 +79,8 @@ export default function App() {
   // The repo whose Remove from window is being confirmed in the sidebar, and
   // where focus was when it was asked.
   const [repoConfirm, setRepoConfirm] = useState<{ path: string; back: Element | null } | null>(null)
+  // Open With… (⌘⇧O): the worktree it opens and where its menu shows.
+  const [openMenu, setOpenMenu] = useState<{ w: main.WorkspaceInfo; at: { x: number; y: number } } | null>(null)
   const filterRef = useRef<HTMLInputElement>(null)
   const snapSeq = useRef({ asked: 0, shown: 0 })
 
@@ -169,6 +173,13 @@ export default function App() {
     } catch (e) {
       say(errText(e), true)
     }
+  }
+
+  // goToTab switches to a worktree's tab: ⌘J, or a clicked notification.
+  async function goToTab(dir: string, id: string) {
+    await openWs(dir)
+    setLayout(dir, (l) => activate(l, id))
+    focusNow()
   }
 
   function focusList() {
@@ -342,6 +353,17 @@ export default function App() {
   // The repo header menu's actions.
   const newIn = (path: string) => !busy && setModal({ kind: 'new', repo: path })
   const settingsFor = (config: string) => !busy && setModal({ kind: 'settings', config })
+
+  // openItems are Open With…'s entries for w: its repo's open_with apps, then
+  // the external terminal. 1–9 pick them in the menu.
+  const openItems = (w: main.WorkspaceInfo): MenuItem[] => {
+    const done = (p: Promise<void>, where: string) => p.then(() => say(`opened ${w.name} in ${where}`), (e) => say(errText(e), true))
+    const apps = repos.find((r) => r.path === w.repoPath)?.apps ?? []
+    const items: MenuItem[] = apps.map((app) => ({ label: app, onSelect: () => done(api.OpenWith(w.dir, app), app) }))
+    if (snap?.terminal) items.push({ label: 'Terminal', onSelect: () => done(api.OpenInTerminal(w.dir), 'terminal') })
+    if (!items.length) return [{ label: 'Set up in Settings…', onSelect: () => settingsFor(w.config) }]
+    return items.map((it, i) => (it !== 'divider' && i < 9 ? { ...it, keys: String(i + 1) } : it))
+  }
   const reveal = (path: string) => api.Reveal(path).catch((e) => say(errText(e), true))
   function toggleRepo(path: string) {
     const next = collapsed.includes(path) ? collapsed.filter((p) => p !== path) : [...collapsed, path]
@@ -441,8 +463,11 @@ export default function App() {
         )
       case 'update':
         return need((w) => (w.branch ? setModal({ kind: 'update', dir: w.dir }) : say(`${w.name} is not on a branch`)))
-      case 'terminal':
-        return need((w) => api.OpenInTerminal(w.dir).then(() => say(`opened ${w.name} in terminal`), (e) => say(errText(e), true)))
+      case 'open-with':
+        return need((w) => {
+          const r = document.querySelector(`.sidebar li[title="${CSS.escape(w.dir)}"]`)?.getBoundingClientRect()
+          setOpenMenu({ w, at: r ? { x: r.left + 24, y: r.bottom } : { x: innerWidth / 2 - 100, y: 80 } })
+        })
       case 'close':
         return need(closeWs)
       case 'delete':
@@ -461,6 +486,10 @@ export default function App() {
         return newTab(sel?.dir, 'claude')
       case 'new-shell':
         return newTab(sel?.dir, 'shell')
+      case 'next-attention': {
+        const t = nextNeeding(all, selTab)
+        return t ? goToTab(t.dir, t.id) : say('no Claude needs you')
+      }
       case 'next-tab':
         return change((l) => cycle(l, 1))
       case 'prev-tab':
@@ -495,17 +524,23 @@ export default function App() {
   }
 
   // Backend events are subscribed once; they call the latest render's handlers.
-  const live = useRef({ dispatch, openWs, reload, refresh, busy, modal, selTab })
-  live.current = { dispatch, openWs, reload, refresh, busy, modal, selTab }
+  const live = useRef({ dispatch, openWs, goToTab, reload, refresh, busy, modal, selTab })
+  live.current = { dispatch, openWs, goToTab, reload, refresh, busy, modal, selTab }
   useEffect(() => {
     const offs = [
       EventsOn('changed', () => live.current.refresh()),
       EventsOn('menu', (a: string) => live.current.dispatch(a)),
       EventsOn('open', (dir: string) => live.current.openWs(dir)),
+      EventsOn('goto-tab', (dir: string, id: string) => live.current.goToTab(dir, id)),
     ]
+    // Only a grove in the background notifies.
+    api.SetFocused(document.hasFocus())
+    const onBlur = () => api.SetFocused(false)
+    window.addEventListener('blur', onBlur)
     // Rescan when the window regains focus, so worktrees made elsewhere appear;
     // the tab in front of you has now been seen.
     const onFocus = () => {
+      api.SetFocused(true)
       if (live.current.selTab) api.SeenTab(live.current.selTab)
       if (!live.current.busy && !live.current.modal) live.current.reload(false)
     }
@@ -532,6 +567,7 @@ export default function App() {
     return () => {
       offs.forEach((off) => off())
       window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
       window.removeEventListener('keydown', onKey, true)
     }
   }, [])
@@ -695,6 +731,7 @@ export default function App() {
         onUpdate={(dir) => !busy && setModal({ kind: 'update', dir })}
         onReveal={reveal}
         onSettings={settingsFor}
+        openItems={openItems}
         onAskRemove={askRemoveRepo}
         confirm={repoConfirm?.path ?? null}
         onConfirm={answerRemoveRepo}
@@ -827,6 +864,7 @@ export default function App() {
       {modal?.kind === 'update' && all.find((w) => w.dir === modal.dir) && (
         <Update ws={all.find((w) => w.dir === modal.dir)!} onClose={() => setModal(null)} onClaude={() => askClaude(modal.dir)} say={(t) => say(t)} />
       )}
+      {openMenu && <Menu label={`Open ${openMenu.w.name} in…`} at={openMenu.at} items={openItems(openMenu.w)} onClose={() => setOpenMenu(null)} />}
       {modal?.kind === 'help' && <Help snap={snap} close={() => setModal(null)} />}
       {modal?.kind === 'linear-connect' && <ConnectDialog rejected={modal.rejected} onCancel={() => setModal(null)} onDone={() => setModal(modal.after)} />}
       {modal?.kind === 'linear-search' && snap && (
@@ -1292,10 +1330,23 @@ function SettingsForm(props: { snap: main.Snapshot; config: string; onDone: () =
                       spellCheck={false}
                     />
                   </label>
+                  <label>
+                    <span>
+                      Open with <small>apps for Open With… (⌘⇧O), comma separated</small>
+                    </span>
+                    <input
+                      value={(r.openWith ?? []).join(',')}
+                      onChange={set((c, v) => (c.repo[i].openWith = v ? v.split(',') : []))} // trimmed on save
+                      placeholder={navigator.userAgent.includes('Mac') ? 'e.g. Visual Studio Code, Xcode' : 'e.g. code {dir}'}
+                      spellCheck={false}
+                    />
+                  </label>
                 </section>
               ))}
             </>
           )}
+          <h3>Claude Code</h3>
+          <ClaudeHooksRow />
           <h3>Linear</h3>
           <LinearAccountRow onConnect={onLinearConnect} />
           {err && <p className="err">{err}</p>}
@@ -1350,6 +1401,33 @@ function Help({ snap, close }: { snap: main.Snapshot | null; close: () => void }
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ClaudeHooksRow is the Claude Code section of Settings: whether the hooks
+// behind the sidebar's marks, ⌘J and notifications are installed.
+function ClaudeHooksRow() {
+  const [installed, setInstalled] = useState<boolean | null>(null)
+  const [err, setErr] = useState('')
+  const load = () =>
+    api.ClaudeHooks().then(
+      (ok) => setInstalled(ok),
+      (e) => setErr(errText(e)),
+    )
+  useEffect(() => {
+    load()
+  }, [])
+  const install = () => api.InstallClaudeHooks().then(load, (e) => setErr(errText(e)))
+  return (
+    <div className="field">
+      <span>{installed === null ? (err ? 'Hooks: unknown' : 'Checking…') : installed ? 'Hooks installed ✓' : 'Hooks not installed: no marks, ⌘J or notifications'}</span>
+      {installed === false && (
+        <button type="button" onClick={install}>
+          Install
+        </button>
+      )}
+      {err && <p className="err">{err}</p>}
     </div>
   )
 }

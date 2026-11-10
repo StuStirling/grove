@@ -152,6 +152,36 @@ func TestTabsOpenAndCloseWorkspace(t *testing.T) {
 	}
 }
 
+// Only a turn finishing or a new wait alerts: a session starting idle, a
+// repeated report and seen do not.
+func TestClaudeAlerts(t *testing.T) {
+	s := newSessions("", func(string, ...any) {})
+	var got []string
+	s.alert = func(p Pane, ws, _ string) { got = append(got, ws+":"+p.Claude) }
+	dir := t.TempDir()
+	p := s.ensure(Workspace{Name: "w", Dir: dir, Panes: []string{"claude"}}, "")[0]
+	for _, st := range []string{"idle", "working", "idle", "idle", "waiting", "waiting", "working", "waiting", ""} {
+		if err := s.setClaude(p.ID, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"w:idle", "w:waiting", "w:waiting"}; !slices.Equal(got, want) {
+		t.Errorf("alerts = %q, want %q", got, want)
+	}
+	_ = s.setClaude(p.ID, "waiting")
+	if n := s.attention(); n != 1 {
+		t.Errorf("attention = %d, want 1", n)
+	}
+	open, _ := s.snapshot()
+	if open[dir][0].Since == 0 {
+		t.Error("a mark change should stamp Since")
+	}
+	s.seen(p.ID)
+	if n := s.attention(); n != 0 {
+		t.Errorf("attention after seen = %d, want 0", n)
+	}
+}
+
 func TestClaudeMarksPerPane(t *testing.T) {
 	r := &recorder{}
 	s := newSessions("", r.emit)

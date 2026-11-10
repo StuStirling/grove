@@ -12,6 +12,8 @@ export function Branches(arg1:string):Promise<Array<string>>;
 
 export function Checkout(arg1:string,arg2:string,arg3:string):Promise<string>;
 
+export function ClaudeHooks():Promise<boolean>;
+
 export function Close(arg1:string):Promise<void>;
 
 export function CloseTab(arg1:string):Promise<void>;
@@ -30,6 +32,8 @@ export function GetLinearProject(arg1:string):Promise<main.LinearProject>;
 
 export function InitRepo(arg1:string,arg2:string,arg3:string):Promise<void>;
 
+export function InstallClaudeHooks():Promise<void>;
+
 export function LinearAccount():Promise<main.LinearAccount>;
 
 export function LinearConnect(arg1:string):Promise<main.LinearAccount>;
@@ -47,6 +51,8 @@ export function OpenInTerminal(arg1:string):Promise<void>;
 export function OpenRepo():Promise<void>;
 
 export function OpenURL(arg1:string):Promise<void>;
+
+export function OpenWith(arg1:string,arg2:string):Promise<void>;
 
 export function PlanRepo(arg1:string,arg2:string,arg3:string):Promise<main.RepoPlan>;
 
@@ -69,6 +75,8 @@ export function RunUpdate(arg1:string,arg2:string,arg3:string):Promise<main.Upda
 export function SaveSettings(arg1:string,arg2:main.Config,arg3:string):Promise<void>;
 
 export function SeenTab(arg1:string):Promise<void>;
+
+export function SetFocused(arg1:boolean):Promise<void>;
 
 export function Settings(arg1:string):Promise<main.SettingsFile>;
 

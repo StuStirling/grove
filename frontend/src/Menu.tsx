@@ -39,6 +39,13 @@ export function Menu({ items, at, label, onClose }: { items: MenuItem[]; at: { x
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
       els[(i + (e.key === 'ArrowDown' ? 1 : -1) + els.length) % els.length]?.focus()
+    } else if (/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      // An item showing a digit as its key is picked by it (Open With…).
+      const el = els.find((el) => el.querySelector('kbd')?.textContent === e.key)
+      if (el) {
+        e.preventDefault()
+        el.click()
+      }
     } else if (e.key === 'Escape' || e.key === 'Tab') {
       e.preventDefault()
       e.stopPropagation()

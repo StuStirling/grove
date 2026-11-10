@@ -22,6 +22,10 @@ export function Checkout(arg1, arg2, arg3) {
   return window['go']['main']['App']['Checkout'](arg1, arg2, arg3);
 }
 
+export function ClaudeHooks() {
+  return window['go']['main']['App']['ClaudeHooks']();
+}
+
 export function Close(arg1) {
   return window['go']['main']['App']['Close'](arg1);
 }
@@ -58,6 +62,10 @@ export function InitRepo(arg1, arg2, arg3) {
   return window['go']['main']['App']['InitRepo'](arg1, arg2, arg3);
 }
 
+export function InstallClaudeHooks() {
+  return window['go']['main']['App']['InstallClaudeHooks']();
+}
+
 export function LinearAccount() {
   return window['go']['main']['App']['LinearAccount']();
 }
@@ -92,6 +100,10 @@ export function OpenRepo() {
 
 export function OpenURL(arg1) {
   return window['go']['main']['App']['OpenURL'](arg1);
+}
+
+export function OpenWith(arg1, arg2) {
+  return window['go']['main']['App']['OpenWith'](arg1, arg2);
 }
 
 export function PlanRepo(arg1, arg2, arg3) {
@@ -136,6 +148,10 @@ export function SaveSettings(arg1, arg2, arg3) {
 
 export function SeenTab(arg1) {
   return window['go']['main']['App']['SeenTab'](arg1);
+}
+
+export function SetFocused(arg1) {
+  return window['go']['main']['App']['SetFocused'](arg1);
 }
 
 export function Settings(arg1) {
