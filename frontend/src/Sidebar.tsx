@@ -46,6 +46,7 @@ export function Sidebar(props: {
   onToggle: (key: string) => void // a repo path, or projectKey(name)
   onProject: (dir: string, name: string | null) => void // null: out of every project
   onNewProject: (dir: string) => void
+  onUpdate: (dir: string) => void
   onReveal: (repoPath: string) => void
   onSettings: (config: string) => void
   onAskRemove: (repoPath: string) => void
@@ -67,6 +68,7 @@ export function Sidebar(props: {
       items: [
         ...(w.branch ? [{ label: 'Copy branch', onSelect: () => ClipboardSetText(w.branch) }] : []),
         { label: 'Copy path', onSelect: () => ClipboardSetText(w.dir) },
+        ...(w.repoPath && w.branch ? ['divider' as const, { label: 'Update from base…', keys: key(snap, 'Update from Base'), onSelect: () => props.onUpdate(w.dir) }] : []),
         // Manual [[workspace]] entries are never in a project.
         ...(w.repoPath ? projectItems(w) : []),
       ],
@@ -221,6 +223,11 @@ export function Sidebar(props: {
                         <>
                           <Status w={w} active={w.dir === selected} />
                           <Claude state={w.claude} />
+                          {w.git && (
+                            <i className="git-op" title={w.git === 'merge' ? 'Merge in progress' : 'Rebase in progress'}>
+                              ⚠
+                            </i>
+                          )}
                         </>
                       )}
                     </span>
@@ -230,6 +237,7 @@ export function Sidebar(props: {
                         {props.mains.has(w.dir) && <span className="tag-main">main</span>}
                       </span>
                       {w.branch && <span className="branch">{w.branch}</span>}
+                      {w.git && <span className="rm-line busy">{w.git === 'merge' ? 'merging' : 'rebasing'}</span>}
                       {r?.kind === 'removing' && <span className="rm-line busy">Removing worktree…</span>}
                       {r?.kind === 'deleting' && <span className="rm-line busy">Deleting branch…</span>}
                       {r?.kind === 'done' && <span className="rm-line">Removed.</span>}

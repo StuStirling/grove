@@ -22,7 +22,13 @@ func worktreesOf(repoPath string) ([]worktree, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseWorktrees(string(out)), nil
+	wts := parseWorktrees(string(out))
+	for i, wt := range wts {
+		if wt.Branch == "" && !wt.Bare {
+			wts[i].Branch = rebasingBranch(wt.Path) // git lists a rebase as detached
+		}
+	}
+	return wts, nil
 }
 
 // parseWorktrees parses porcelain output. Blocks are separated by blank lines:
@@ -323,8 +329,15 @@ type gitError struct {
 func (e *gitError) Error() string { return e.cmd + ": " + e.out }
 
 // runGit runs git in dir, returning a *gitError when it fails.
-func runGit(dir string, args ...string) error {
-	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+func runGit(dir string, args ...string) error { return runGitEnv(dir, nil, args...) }
+
+// runGitEnv is runGit with extra environment variables.
+func runGitEnv(dir string, env []string, args ...string) error {
+	c := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if env != nil {
+		c.Env = append(os.Environ(), env...)
+	}
+	out, err := c.CombinedOutput()
 	if err == nil {
 		return nil
 	}

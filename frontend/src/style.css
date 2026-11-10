@@ -246,3 +246,11 @@ button kbd { margin-left: 6px; background: transparent; }
 .prompt .link { padding: 0; background: transparent; border: 0; color: var(--accent); font-size: 12px; }
 .prompt pre { max-height: 190px; overflow: auto; margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font: 11px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
 .start .buttons .hint { margin-right: auto; align-self: center; font-size: 12px; color: var(--muted); }
+
+/* Update from Base */
+.git-op { color: var(--waiting); font-style: normal; font-weight: 700; }
+.dialog .warn { color: var(--waiting); }
+.update .strategy { display: flex; align-items: center; gap: 14px; margin: 0 0 12px; color: var(--muted); }
+.update .strategy label { display: flex; align-items: center; gap: 4px; color: var(--text); }
+.update .steps li.running::after { content: ' …'; color: var(--waiting); }
+.update ul.files { margin: 0 0 14px; padding-left: 20px; font: 12px ui-monospace, Menlo, monospace; color: var(--text); }

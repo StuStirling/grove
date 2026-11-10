@@ -98,6 +98,7 @@ type WorkspaceInfo struct {
 	Config   string `json:"config"`   // the config file it came from
 	Open     bool   `json:"open"`
 	Claude   string `json:"claude"` // "working" | "waiting" | "idle" | ""
+	Git      string `json:"git"`    // "rebase" | "merge" while stopped mid-operation, else ""
 	Panes    []Pane `json:"panes"`
 }
 
@@ -408,7 +409,7 @@ func (a *App) State() Snapshot {
 	for i, ws := range a.ws {
 		infos[i] = WorkspaceInfo{
 			Name: ws.Name, Branch: ws.Branch, Dir: ws.Dir, Repo: ws.RepoName, RepoPath: ws.RepoPath, Config: ws.Config,
-			Claude: claude[ws.Dir], Panes: open[ws.Dir],
+			Claude: claude[ws.Dir], Git: operation(ws.Dir), Panes: open[ws.Dir],
 		}
 		_, infos[i].Open = open[ws.Dir]
 	}
@@ -858,6 +859,7 @@ var shortcuts = []shortcut{
 	{"File", "New Shell", "new-shell", "t", shiftMod},
 	{"File", "", "", "", nil},
 	{"File", "Open in Terminal", "terminal", "o", shiftMod},
+	{"File", "Update from Base…", "update", "u", cmdMod},
 	{"File", "", "", "", nil},
 	{"File", "Close Worktree", "close", "w", cmdMod},
 	{"File", "Delete Worktree…", "delete", "backspace", cmdMod},
