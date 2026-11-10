@@ -59,3 +59,12 @@ test('keyAction maps each view’s keys', () => {
   assert.equal(up.keyAction('conflicts', key('Escape'), true), 'cancel')
   assert.equal(up.keyAction('conflicts', key('r'), true), null)
 })
+
+test('keyAction leaves Enter and letters to a focused button', () => {
+  const onButton = (k: string) => ({ ...key(k), onControl: true })
+  assert.equal(up.keyAction('push', onButton('Enter'), true), null, 'Tab to Not now, ↩ must not push')
+  assert.equal(up.keyAction('plan', onButton('Enter'), true), null)
+  assert.equal(up.keyAction('conflicts', onButton('Enter'), true), null)
+  assert.equal(up.keyAction('conflicts', onButton('Escape'), true), 'cancel')
+  assert.equal(up.keyAction('conflicts', { ...key('Backspace', { metaKey: true }), onControl: true }, true), 'abort')
+})

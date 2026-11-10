@@ -60,8 +60,11 @@ export type Action = 'update' | 'rebase' | 'merge' | 'cancel' | 'push' | 'contin
 // keyAction is what a key does in each of the dialog's views. Letters only
 // count unmodified, so ⌘R stays Reload. Abort takes the platform's delete
 // modifier because it throws away conflict resolution.
-export function keyAction(view: View, e: { key: string; metaKey: boolean; ctrlKey: boolean }, mac: boolean): Action | null {
+// onControl: focus is on a button or input, whose own ↩ (activate that button)
+// must win, or Tab to "Not now" then ↩ would push.
+export function keyAction(view: View, e: { key: string; metaKey: boolean; ctrlKey: boolean; onControl?: boolean }, mac: boolean): Action | null {
   if (e.key === 'Escape') return 'cancel'
+  if (e.onControl && e.key === 'Enter') return null
   const plain = !e.metaKey && !e.ctrlKey
   const k = e.key.toLowerCase()
   switch (view) {

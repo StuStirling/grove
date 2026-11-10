@@ -22,7 +22,13 @@ func worktreesOf(repoPath string) ([]worktree, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseWorktrees(string(out)), nil
+	wts := parseWorktrees(string(out))
+	for i, wt := range wts {
+		if wt.Branch == "" && !wt.Bare {
+			wts[i].Branch = rebasingBranch(wt.Path) // git lists a rebase as detached
+		}
+	}
+	return wts, nil
 }
 
 // parseWorktrees parses porcelain output. Blocks are separated by blank lines:

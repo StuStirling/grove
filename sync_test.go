@@ -508,3 +508,83 @@ func TestUpdateShortcut(t *testing.T) {
 		t.Error("no ⌘U update shortcut")
 	}
 }
+
+// Review fixes.
+
+func TestReplanAfterRebaseOfPushedBranch(t *testing.T) {
+	_, _, dir := conflictRepo(t)
+	pushT(t, dir)
+	if r := runUpdate(dir, "feat", "origin/trunk", headT(t, dir), "rebase"); r.Status != "stopped" {
+		t.Fatalf("run %+v", r)
+	}
+	writeT(t, filepath.Join(dir, "a.txt"), "both")
+	gitT(t, dir, "add", "a.txt")
+	if r := continueUpdate(dir, "feat"); r.Status != "done" {
+		t.Fatalf("continue %+v", r)
+	}
+	if s := stepsFor(dir, "feat", "origin/trunk"); len(s) != 0 {
+		t.Errorf("the pre-rebase commits came back as a pull: %+v", s)
+	}
+	if k := pushKind(dir); k != "force" {
+		t.Errorf("push kind %q", k)
+	}
+}
+
+func TestReplanStillPullsTeammateCommits(t *testing.T) {
+	origin, clone, dir := behindT(t)
+	if r := runUpdate(dir, "feat", "origin/trunk", headT(t, dir), "rebase"); r.Status != "done" {
+		t.Fatalf("run %+v", r)
+	}
+	otherCommitT(t, origin, "o.txt", "o")
+	gitT(t, clone, "fetch", "-q")
+	if s := stepsFor(dir, "feat", "origin/trunk"); len(s) != 1 || s[0].Kind != "pull" || s[0].Count != 1 {
+		t.Errorf("teammate's commit: %+v", s)
+	}
+}
+
+func TestForcePushRefusesFetchedButUnseenCommits(t *testing.T) {
+	origin, clone, dir := syncRepo(t)
+	commitT(t, dir, "f.txt", "f")
+	pushT(t, dir)
+	otherCommitT(t, origin, "o.txt", "o")
+	gitT(t, clone, "fetch", "-q") // a background fetch: the lease alone now passes
+	gitT(t, dir, "commit", "-q", "--amend", "-m", "amended")
+	if err := pushUpdate(dir, "feat", "origin/trunk", "force"); err != errStaleLease {
+		t.Errorf("want stale lease, got %v", err)
+	}
+}
+
+func TestWorktreesOfMidRebaseKeepsBranch(t *testing.T) {
+	_, clone, dir := conflictRepo(t)
+	_ = runGit(dir, "rebase", "origin/trunk")
+	wts, err := worktreesOf(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wt := range wts {
+		if filepath.Base(wt.Path) == "feat" && wt.Branch != "feat" {
+			t.Errorf("mid-rebase worktree branch %q", wt.Branch)
+		}
+	}
+}
+
+func TestStoppedResultSaysWhy(t *testing.T) {
+	_, _, dir := conflictRepo(t)
+	_ = runUpdate(dir, "feat", "origin/trunk", headT(t, dir), "merge")
+	if r := continueUpdate(dir, "feat"); r.Status != "stopped" || r.Reason == "" {
+		t.Errorf("continue with unresolved files: %+v", r)
+	}
+}
+
+func TestUpstreamOnBaseIsNotOwnUpstream(t *testing.T) {
+	origin, clone, dir := syncRepo(t)
+	gitT(t, dir, "branch", "-q", "--set-upstream-to", "origin/trunk")
+	commitT(t, origin, "t.txt", "t")
+	gitT(t, clone, "fetch", "-q")
+	if s := stepsFor(dir, "feat", "origin/trunk"); len(s) != 1 || s[0].Kind != "base" {
+		t.Errorf("base duplicated as a pull: %+v", s)
+	}
+	if k := pushKind(dir); k != "upstream" {
+		t.Errorf("push kind %q, want upstream (own branch not pushed yet)", k)
+	}
+}

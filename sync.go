@@ -61,6 +61,17 @@ func operation(dir string) string {
 	return ""
 }
 
+// rebasingBranch is the branch a rebase stopped at dir is rewriting, or "".
+func rebasingBranch(dir string) string {
+	g := gitDir(dir)
+	for _, d := range []string{"rebase-merge", "rebase-apply"} {
+		if b, err := os.ReadFile(filepath.Join(g, d, "head-name")); g != "" && err == nil {
+			return strings.TrimPrefix(strings.TrimSpace(string(b)), "refs/heads/")
+		}
+	}
+	return ""
+}
+
 // inProgress describes the operation the worktree at dir (on branch) is
 // stopped in, or nil if none.
 func inProgress(dir, branch string) *InProgress {
@@ -89,13 +100,17 @@ func conflictPrompt(kind, branch string, files []string) string {
 // has no pushed upstream, "force" when its upstream isn't in its history (a
 // rebase or amend), "push" when it's ahead, else "".
 func pushKind(dir string) string {
-	if revParse(dir, "@{u}") == "" {
+	var up string
+	if b := gitLines(dir, "symbolic-ref", "--short", "HEAD"); len(b) == 1 {
+		up = ownUpstream(dir, b[0])
+	}
+	if up == "" || revParse(dir, up) == "" {
 		return "upstream"
 	}
-	if exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", "@{u}", "HEAD").Run() != nil {
+	if exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", up, "HEAD").Run() != nil {
 		return "force"
 	}
-	if count(dir, "@{u}..HEAD") > 0 {
+	if count(dir, up+"..HEAD") > 0 {
 		return "push"
 	}
 	return ""
@@ -246,21 +261,51 @@ type UpdatePlan struct {
 // branch itself only fast-forwards from its upstream.
 func stepsFor(dir, branch, base string) []UpdateStep {
 	var steps []UpdateStep
-	up := upstreamName(dir)
+	up := ownUpstream(dir, branch)
 	_, baseBranch, _ := strings.Cut(base, "/")
 	if branch == baseBranch {
-		if n := count(dir, "HEAD..@{u}"); up != "" && n > 0 {
+		if n := count(dir, "HEAD.."+up); up != "" && n > 0 {
 			steps = append(steps, UpdateStep{"ff", up, n})
 		}
 		return steps
 	}
-	if n := count(dir, "HEAD..@{u}"); up != "" && n > 0 {
+	if n := unseen(dir, branch, up); up != "" && n > 0 {
 		steps = append(steps, UpdateStep{"pull", up, n})
 	}
 	if n := count(dir, "HEAD.."+base); n > 0 {
 		steps = append(steps, UpdateStep{"base", base, n})
 	}
 	return steps
+}
+
+// ownUpstream is branch's pushed upstream when it is the branch of the same
+// name on its remote, e.g. "origin/feat"; else "". A branch made tracking its
+// base (origin/main) has no upstream of its own: pulling that would duplicate
+// the base step, and pushing to it would push to main.
+func ownUpstream(dir, branch string) string {
+	up := upstreamName(dir)
+	if _, name, ok := strings.Cut(up, "/"); !ok || name != branch {
+		return ""
+	}
+	return up
+}
+
+// unseen counts the commits on ref the branch has never had: not in HEAD and
+// not anywhere in the branch's reflog. After a rebase the upstream still holds
+// the old copies of the branch's own commits; those aren't new.
+func unseen(dir, branch, ref string) int {
+	in := ref + "\n^HEAD\n"
+	for _, h := range gitLines(dir, "log", "-g", "--format=%H", "refs/heads/"+branch) {
+		in += "^" + h + "\n"
+	}
+	c := exec.Command("git", "-C", dir, "rev-list", "--count", "--stdin")
+	c.Stdin = strings.NewReader(in)
+	out, err := c.Output()
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return n
 }
 
 // upstreamName is the branch's pushed upstream, e.g. "origin/feat", or "".
@@ -370,7 +415,11 @@ func stepArgs(s UpdateStep, strategy string) []string {
 // after is the result of a git command that may have stopped mid-operation.
 func after(dir, branch string, err error) UpdateResult {
 	if p := inProgress(dir, branch); p != nil {
-		return UpdateResult{Status: "stopped", Progress: p}
+		r := UpdateResult{Status: "stopped", Progress: p}
+		if err != nil { // e.g. Continue with files still unresolved, or a hook
+			r.Reason, r.Detail = explain(err)
+		}
+		return r
 	}
 	if err != nil {
 		reason, detail := explain(err)
@@ -424,22 +473,25 @@ var errStaleLease = errors.New("Remote changed since you fetched. Run Update aga
 
 // pushUpdate pushes branch the way kind (from pushKind) says.
 func pushUpdate(dir, branch, base, kind string) error {
-	var err error
+	remote := upstreamRemote(dir, base)
+	if r := gitLines(dir, "config", "branch."+branch+".remote"); len(r) == 1 {
+		remote = r[0]
+	}
+	// Always to the same-named branch on the remote, whatever push.default
+	// says. --force-if-includes also refuses commits a background fetch
+	// brought in that the branch never had, which the lease alone allows.
+	args := []string{"push", remote, branch}
 	switch kind {
 	case "force":
-		err = runGit(dir, "push", "--force-with-lease")
+		args = []string{"push", "--force-with-lease", "--force-if-includes", remote, branch}
 	case "upstream":
-		remote := upstreamRemote(dir, base)
-		if r := gitLines(dir, "config", "branch."+branch+".remote"); len(r) == 1 {
-			remote = r[0]
-		}
-		err = runGit(dir, "push", "-u", remote, branch)
-	default:
-		err = runGit(dir, "push")
+		args = []string{"push", "-u", remote, branch}
 	}
-	// ponytail: matches git's English "(stale info)", as refusedAsDirty does.
+	err := runGit(dir, args...)
+	// ponytail: matches git's English "(stale info)" and "(remote ref updated
+	// since checkout)", as refusedAsDirty does.
 	var ge *gitError
-	if errors.As(err, &ge) && strings.Contains(ge.out, "stale info") {
+	if errors.As(err, &ge) && (strings.Contains(ge.out, "stale info") || strings.Contains(ge.out, "updated since checkout")) {
 		return errStaleLease
 	}
 	return err

@@ -51,7 +51,10 @@ export function Update({ ws, onClose, onClaude, say }: { ws: main.WorkspaceInfo;
   // after handles a run or continue result; "done" from a continue re-plans,
   // as later steps haven't run.
   function after(r: main.UpdateResult, p: main.UpdatePlan | null, replan: boolean) {
-    if (r.status === 'stopped' && r.progress) return setView({ kind: 'conflicts', plan: p, progress: r.progress })
+    if (r.status === 'stopped' && r.progress) {
+      if (r.reason) setError({ reason: r.reason, detail: r.detail }) // say why Continue didn't finish
+      return setView({ kind: 'conflicts', plan: p, progress: r.progress })
+    }
     if (r.status === 'failed') return setError({ reason: r.reason, detail: r.detail })
     if (replan || !p) return void plan()
     const done = doneLine(strategy, p.steps)
@@ -96,7 +99,8 @@ export function Update({ ws, onClose, onClaude, say }: { ws: main.WorkspaceInfo;
       if (e.key === 'Escape' || e.key === 'Enter') (e.preventDefault(), onClose())
       return
     }
-    const a = keyAction(view.kind, e, mac)
+    const onControl = e.target !== e.currentTarget && (e.target as Element).matches('button, input')
+    const a = keyAction(view.kind, { key: e.key, metaKey: e.metaKey, ctrlKey: e.ctrlKey, onControl }, mac)
     if (!a) return
     e.preventDefault()
     e.stopPropagation()
