@@ -75,7 +75,7 @@ func TestSessionsLifecycle(t *testing.T) {
 		return strings.Contains(o, "big:wt:none") && strings.Contains(o, "setup-42") && strings.Contains(o, dir)
 	})
 
-	if err := s.setClaude(panes[0].ID, "waiting"); err != nil {
+	if err := s.setClaude(panes[0].ID, "waiting", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, cl := s.snapshot(); cl[dir] != "waiting" {
@@ -161,14 +161,14 @@ func TestClaudeAlerts(t *testing.T) {
 	dir := t.TempDir()
 	p := s.ensure(Workspace{Name: "w", Dir: dir, Panes: []string{"claude"}}, "")[0]
 	for _, st := range []string{"idle", "working", "idle", "idle", "waiting", "waiting", "working", "waiting", ""} {
-		if err := s.setClaude(p.ID, st); err != nil {
+		if err := s.setClaude(p.ID, st, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if want := []string{"w:idle", "w:waiting", "w:waiting"}; !slices.Equal(got, want) {
 		t.Errorf("alerts = %q, want %q", got, want)
 	}
-	_ = s.setClaude(p.ID, "waiting")
+	_ = s.setClaude(p.ID, "waiting", "")
 	if n := s.attention(); n != 1 {
 		t.Errorf("attention = %d, want 1", n)
 	}
@@ -192,7 +192,7 @@ func TestClaudeMarksPerPane(t *testing.T) {
 
 	// The workspace's mark is the one that most needs you: waiting > idle > working.
 	for i, st := range []string{"working", "idle", "waiting"} {
-		if err := s.setClaude(ps[i].ID, st); err != nil {
+		if err := s.setClaude(ps[i].ID, st, ""); err != nil {
 			t.Fatal(err)
 		}
 		if got := summary(); got != st {
@@ -264,7 +264,7 @@ func TestTabBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for st, want := range map[string]bool{"working": true, "idle": false, "waiting": false, "": false} {
-		_ = s.setClaude(cl.ID, st)
+		_ = s.setClaude(cl.ID, st, "")
 		if got := s.busy(cl.ID); got != want {
 			t.Errorf("claude %q: busy = %v, want %v", st, got, want)
 		}
@@ -517,4 +517,17 @@ func TestSeedReachesClaudeVerbatim(t *testing.T) {
 		return strings.Contains(strings.ReplaceAll(r.output(), "\r\n", "\n"), want)
 	})
 	s.closeAll()
+}
+
+func TestSetClaudeSession(t *testing.T) {
+	s := newSessions("", (&recorder{}).emit)
+	ps := s.ensure(Workspace{Name: "w", Dir: t.TempDir(), Panes: []string{"claude"}}, "")
+	id := ps[0].ID
+	good := "5f1c2b9e-0a1d-4c3e-9f00-1234567890ab"
+	_ = s.setClaude(id, "idle", good)
+	_ = s.setClaude(id, "working", "")            // empty keeps it
+	_ = s.setClaude(id, "working", "x; rm -rf ~") // invalid ignored, state still applies
+	if p := s.panes[id]; p.session != good || p.Claude != "working" {
+		t.Fatalf("session %q state %q", p.session, p.Claude)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -31,14 +32,15 @@ type Pane struct {
 // first Start call, so it is spawned at the size the pane is actually drawn.
 type pane struct {
 	Pane
-	ws    string   // workspace name, for GROVE_WORKSPACE
-	dir   string   // worktree dir: the workspace's key
-	setup string   // typed into the pane once it starts (the repo's setup command)
-	args  string   // appended to Cmd when the process starts: a seeded Claude's flags and prompt
-	env   []string // added to the pane's environment when it starts
-	f     *os.File // pty master; nil until started
-	cmd   *exec.Cmd
-	done  chan struct{} // closed once the process has exited and been reaped
+	ws      string   // workspace name, for GROVE_WORKSPACE
+	dir     string   // worktree dir: the workspace's key
+	setup   string   // typed into the pane once it starts (the repo's setup command)
+	args    string   // appended to Cmd when the process starts: a seeded Claude's flags and prompt
+	env     []string // added to the pane's environment when it starts
+	f       *os.File // pty master; nil until started
+	cmd     *exec.Cmd
+	done    chan struct{} // closed once the process has exited and been reaped
+	session string        // Claude's session id, from its hooks: resumed after a restart
 }
 
 // sessions owns every running pane. A workspace is "open" while it has an entry
@@ -409,9 +411,16 @@ func hangup(p *pane) (kill func()) {
 	return kill
 }
 
+// sessionID is the shape of a Claude session id. Anything else is ignored, as
+// the id is put into a shell command on restore.
+var sessionID = regexp.MustCompile("^[0-9a-fA-F-]{36}$")
+
+func validSession(id string) bool { return sessionID.MatchString(id) }
+
 // setClaude records the Claude Code state reported by a pane's hook (`grove
-// state`). An empty state clears the mark.
-func (s *sessions) setClaude(id, state string) error {
+// state`), and its session id when it sent a valid one. An empty state clears
+// the mark.
+func (s *sessions) setClaude(id, state, session string) error {
 	s.mu.Lock()
 	p, ok := s.panes[id]
 	if !ok {
@@ -420,6 +429,9 @@ func (s *sessions) setClaude(id, state string) error {
 	}
 	// A turn finishing or a new wait wants you. A session starting idle, or the
 	// same state reported again, does not.
+	if validSession(session) {
+		p.session = session
+	}
 	alert := (state == "idle" && p.Claude == "working") || (state == "waiting" && p.Claude != "waiting")
 	if state != p.Claude {
 		p.Since = time.Now().UnixMilli()

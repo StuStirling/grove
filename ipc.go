@@ -17,11 +17,12 @@ import (
 
 // ipcReq is a request to a running GUI.
 type ipcReq struct {
-	Op    string `json:"op"`              // ping | focus | open | close | state
-	Dir   string `json:"dir,omitempty"`   // workspace dir, for open/close
-	Setup bool   `json:"setup,omitempty"` // open: fresh worktree, run the repo's setup
-	Pane  string `json:"pane,omitempty"`  // state: reporting pane (GROVE_PANE)
-	State string `json:"state,omitempty"` // state: working | waiting | idle | "" (clear)
+	Op      string `json:"op"`                // ping | focus | open | close | state
+	Dir     string `json:"dir,omitempty"`     // workspace dir, for open/close
+	Setup   bool   `json:"setup,omitempty"`   // open: fresh worktree, run the repo's setup
+	Pane    string `json:"pane,omitempty"`    // state: reporting pane (GROVE_PANE)
+	State   string `json:"state,omitempty"`   // state: working | waiting | idle | "" (clear)
+	Session string `json:"session,omitempty"` // state: the hook's Claude session id, to resume it after a restart
 }
 
 type ipcResp struct {

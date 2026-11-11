@@ -394,7 +394,7 @@ func (a *App) handle(req ipcReq) error {
 		a.reload()
 		return err
 	case "state":
-		return a.sess.setClaude(req.Pane, req.State)
+		return a.sess.setClaude(req.Pane, req.State, req.Session)
 	default:
 		return fmt.Errorf("unknown request %q", req.Op)
 	}
