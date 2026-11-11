@@ -169,6 +169,9 @@ func (s *sessions) ask(ws Workspace, args string, env []string, text string) str
 			return p.ID
 		}
 		p.args, p.env = args, env
+		if p.session != "" { // restored: ask in its conversation, not a new one
+			p.args = "--resume " + p.session + " " + args + " || " + p.Cmd + " " + args
+		}
 		s.mu.Unlock()
 		return p.ID
 	}

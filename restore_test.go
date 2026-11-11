@@ -173,3 +173,22 @@ func TestRestoredClearsOnClose(t *testing.T) {
 		t.Error("still restored after close")
 	}
 }
+
+// Asking a restored, unstarted Claude for help resumes its conversation with the
+// prompt, rather than starting a new one.
+func TestAskRestoredClaudeKeepsResume(t *testing.T) {
+	path, dir := tabsPath(t), t.TempDir()
+	s1 := newTestSessions()
+	ws := Workspace{Name: "a", Dir: dir, Panes: []string{"claude"}}
+	ps := s1.ensure(ws, "")
+	_ = s1.setClaude(ps[0].ID, "idle", testSession)
+	_ = s1.save(path)
+	s2 := newTestSessions()
+	_ = s2.restore(path)
+	id := s2.ask(ws, `"$GROVE_SEED_PROMPT"`, []string{"GROVE_SEED_PROMPT=fix it"}, "fix it")
+	p := s2.panes[id]
+	want := `--resume ` + testSession + ` "$GROVE_SEED_PROMPT" || claude "$GROVE_SEED_PROMPT"`
+	if p.args != want || len(p.env) != 1 {
+		t.Fatalf("args = %q env = %v", p.args, p.env)
+	}
+}
