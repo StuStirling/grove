@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"golang.org/x/term"
@@ -220,9 +222,26 @@ func stateCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "grove state: unknown state %q (want working, waiting, idle or clear)\n", state)
 		os.Exit(2)
 	}
-	if err := ipcCall(sock, ipcReq{Op: "state", Pane: pane, State: state}); err != nil && !errors.Is(err, errNotRunning) {
+	req := ipcReq{Op: "state", Pane: pane, State: state}
+	// Hooks pipe their event JSON on stdin; a terminal (run by hand) would wait.
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice == 0 {
+		req.Session = hookSession(os.Stdin)
+	}
+	if err := ipcCall(sock, req); err != nil && !errors.Is(err, errNotRunning) {
 		fail(err)
 	}
+}
+
+// hookSession is the session_id in a Claude Code hook's stdin JSON, or "" for
+// anything else: a hook must never fail over it.
+func hookSession(r io.Reader) string {
+	var in struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.NewDecoder(r).Decode(&in) != nil {
+		return ""
+	}
+	return in.SessionID
 }
 
 func mustConfig() *Config {

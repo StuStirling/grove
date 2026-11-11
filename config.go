@@ -280,6 +280,9 @@ func (c *Config) socketPath() string {
 // reposFile lists the other repos this config's window also shows (App.addRepo).
 func (c *Config) reposFile() string { return strings.TrimSuffix(c.socketPath(), ".sock") + ".repos" }
 
+// tabsFile holds this window's open tabs between a quit and the next launch.
+func (c *Config) tabsFile() string { return strings.TrimSuffix(c.socketPath(), ".sock") + ".tabs" }
+
 // socketDir holds the per-repo GUI sockets. The user cache dir is stable across
 // launch contexts (terminal, Finder), unlike TMPDIR.
 func socketDir() string {

@@ -428,3 +428,12 @@ func TestInitRepo(t *testing.T) {
 		t.Error("InitRepo wrote a config outside a repo's root")
 	}
 }
+
+func TestQuitMessage(t *testing.T) {
+	if got := quitMessage(1, false); got != "1 worktree is running. Quitting stops its panes." {
+		t.Errorf("got %q", got)
+	}
+	if got := quitMessage(2, true); got != "2 worktrees are running. Quitting stops their panes, Claude conversations resume next launch." {
+		t.Errorf("got %q", got)
+	}
+}

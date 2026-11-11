@@ -459,6 +459,7 @@ export namespace main {
 	    claude: string;
 	    git: string;
 	    panes: Pane[];
+	    restored: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new WorkspaceInfo(source);
@@ -476,6 +477,7 @@ export namespace main {
 	        this.claude = source["claude"];
 	        this.git = source["git"];
 	        this.panes = this.convertValues(source["panes"], Pane);
+	        this.restored = source["restored"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

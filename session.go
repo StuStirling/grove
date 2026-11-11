@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -31,36 +32,39 @@ type Pane struct {
 // first Start call, so it is spawned at the size the pane is actually drawn.
 type pane struct {
 	Pane
-	ws    string   // workspace name, for GROVE_WORKSPACE
-	dir   string   // worktree dir: the workspace's key
-	setup string   // typed into the pane once it starts (the repo's setup command)
-	args  string   // appended to Cmd when the process starts: a seeded Claude's flags and prompt
-	env   []string // added to the pane's environment when it starts
-	f     *os.File // pty master; nil until started
-	cmd   *exec.Cmd
-	done  chan struct{} // closed once the process has exited and been reaped
+	ws      string   // workspace name, for GROVE_WORKSPACE
+	dir     string   // worktree dir: the workspace's key
+	setup   string   // typed into the pane once it starts (the repo's setup command)
+	args    string   // appended to Cmd when the process starts: a seeded Claude's flags and prompt
+	env     []string // added to the pane's environment when it starts
+	f       *os.File // pty master; nil until started
+	cmd     *exec.Cmd
+	done    chan struct{} // closed once the process has exited and been reaped
+	session string        // Claude's session id, from its hooks: resumed after a restart
 }
 
 // sessions owns every running pane. A workspace is "open" while it has an entry
 // in open; it closes when its last pane exits or on Close. Workspaces are keyed
 // by dir, since two repos in one window can have worktrees of the same name.
 type sessions struct {
-	mu     sync.Mutex
-	open   map[string][]*pane // workspace dir -> panes, in the order they opened
-	panes  map[string]*pane   // pane id -> pane
-	nextID int
-	sock   string // exported to panes as GROVE_SOCK, for `grove state`
-	emit   func(event string, data ...any)
-	alert  func(p Pane, ws, dir string) // optional: a Claude now wants you (finished, or waiting)
-	change func()                       // optional: after any change, as the frontend's "changed"
+	mu       sync.Mutex
+	open     map[string][]*pane // workspace dir -> panes, in the order they opened
+	panes    map[string]*pane   // pane id -> pane
+	restored map[string]bool    // workspace dirs reopened at launch, until they close
+	nextID   int
+	sock     string // exported to panes as GROVE_SOCK, for `grove state`
+	emit     func(event string, data ...any)
+	alert    func(p Pane, ws, dir string) // optional: a Claude now wants you (finished, or waiting)
+	change   func()                       // optional: after any change, as the frontend's "changed"
 }
 
 func newSessions(sock string, emit func(string, ...any)) *sessions {
 	return &sessions{
-		open:  map[string][]*pane{},
-		panes: map[string]*pane{},
-		sock:  sock,
-		emit:  emit,
+		open:     map[string][]*pane{},
+		panes:    map[string]*pane{},
+		restored: map[string]bool{},
+		sock:     sock,
+		emit:     emit,
 	}
 }
 
@@ -165,6 +169,9 @@ func (s *sessions) ask(ws Workspace, args string, env []string, text string) str
 			return p.ID
 		}
 		p.args, p.env = args, env
+		if p.session != "" { // restored: ask in its conversation, not a new one
+			p.args = "--resume " + p.session + " " + args + " || " + p.Cmd + " " + args
+		}
 		s.mu.Unlock()
 		return p.ID
 	}
@@ -306,6 +313,7 @@ func (s *sessions) forget(p *pane) {
 	}
 	if len(ps) == 0 {
 		delete(s.open, p.dir)
+		delete(s.restored, p.dir)
 	} else {
 		s.open[p.dir] = ps
 	}
@@ -337,6 +345,7 @@ func (s *sessions) close(dir string) error {
 		hangup(p)
 	}
 	delete(s.open, dir)
+	delete(s.restored, dir)
 	s.mu.Unlock()
 	s.changed()
 	return nil
@@ -409,9 +418,16 @@ func hangup(p *pane) (kill func()) {
 	return kill
 }
 
+// sessionID is the shape of a Claude session id. Anything else is ignored, as
+// the id is put into a shell command on restore.
+var sessionID = regexp.MustCompile("^[0-9a-fA-F-]{36}$")
+
+func validSession(id string) bool { return sessionID.MatchString(id) }
+
 // setClaude records the Claude Code state reported by a pane's hook (`grove
-// state`). An empty state clears the mark.
-func (s *sessions) setClaude(id, state string) error {
+// state`), and its session id when it sent a valid one. An empty state clears
+// the mark.
+func (s *sessions) setClaude(id, state, session string) error {
 	s.mu.Lock()
 	p, ok := s.panes[id]
 	if !ok {
@@ -420,6 +436,9 @@ func (s *sessions) setClaude(id, state string) error {
 	}
 	// A turn finishing or a new wait wants you. A session starting idle, or the
 	// same state reported again, does not.
+	if validSession(session) {
+		p.session = session
+	}
 	alert := (state == "idle" && p.Claude == "working") || (state == "waiting" && p.Claude != "waiting")
 	if state != p.Claude {
 		p.Since = time.Now().UnixMilli()
