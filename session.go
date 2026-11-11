@@ -47,22 +47,24 @@ type pane struct {
 // in open; it closes when its last pane exits or on Close. Workspaces are keyed
 // by dir, since two repos in one window can have worktrees of the same name.
 type sessions struct {
-	mu     sync.Mutex
-	open   map[string][]*pane // workspace dir -> panes, in the order they opened
-	panes  map[string]*pane   // pane id -> pane
-	nextID int
-	sock   string // exported to panes as GROVE_SOCK, for `grove state`
-	emit   func(event string, data ...any)
-	alert  func(p Pane, ws, dir string) // optional: a Claude now wants you (finished, or waiting)
-	change func()                       // optional: after any change, as the frontend's "changed"
+	mu       sync.Mutex
+	open     map[string][]*pane // workspace dir -> panes, in the order they opened
+	panes    map[string]*pane   // pane id -> pane
+	restored map[string]bool    // workspace dirs reopened at launch, until they close
+	nextID   int
+	sock     string // exported to panes as GROVE_SOCK, for `grove state`
+	emit     func(event string, data ...any)
+	alert    func(p Pane, ws, dir string) // optional: a Claude now wants you (finished, or waiting)
+	change   func()                       // optional: after any change, as the frontend's "changed"
 }
 
 func newSessions(sock string, emit func(string, ...any)) *sessions {
 	return &sessions{
-		open:  map[string][]*pane{},
-		panes: map[string]*pane{},
-		sock:  sock,
-		emit:  emit,
+		open:     map[string][]*pane{},
+		panes:    map[string]*pane{},
+		restored: map[string]bool{},
+		sock:     sock,
+		emit:     emit,
 	}
 }
 
@@ -308,6 +310,7 @@ func (s *sessions) forget(p *pane) {
 	}
 	if len(ps) == 0 {
 		delete(s.open, p.dir)
+		delete(s.restored, p.dir)
 	} else {
 		s.open[p.dir] = ps
 	}
@@ -339,6 +342,7 @@ func (s *sessions) close(dir string) error {
 		hangup(p)
 	}
 	delete(s.open, dir)
+	delete(s.restored, dir)
 	s.mu.Unlock()
 	s.changed()
 	return nil
