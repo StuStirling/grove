@@ -14,6 +14,7 @@ import { Menu, type MenuItem } from './Menu'
 import { ConnectDialog, LinearAccountRow, SearchPalette, StartWork } from './Linear'
 import { LINEAR_REJECTED, type Ticket } from './start'
 import { nextNeeding } from './attention'
+import { saveLayouts, startLayout } from './saved'
 
 // Worktrees are keyed by dir everywhere: two repos in one window can share
 // worktree names.
@@ -118,7 +119,7 @@ export default function App() {
     setSnap(s)
     setLayouts((ls) => {
       const next: Record<string, Layout> = {}
-      for (const w of s.workspaces ?? []) if (w.open) next[w.dir] = sync(ls[w.dir], w.panes ?? [], savedRatio(w.dir))
+      for (const w of s.workspaces ?? []) if (w.open) next[w.dir] = sync(startLayout(ls[w.dir], !!w.restored, w.dir), w.panes ?? [], savedRatio(w.dir))
       return next
     })
     setRemovals((rs) => rm.sync(rs, s.workspaces ?? []))
@@ -133,6 +134,7 @@ export default function App() {
       say(errText(e), true)
     }
   }
+  useEffect(() => saveLayouts(layouts), [layouts])
   const setLayout = (dir: string, f: (l: Layout) => Layout) => setLayouts((ls) => (ls[dir] ? { ...ls, [dir]: f(ls[dir]) } : ls))
   // focusNow puts keyboard focus on the selected worktree's focused tab once
   // the next render is on screen.
