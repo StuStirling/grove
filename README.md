@@ -297,8 +297,10 @@ new shell opens there. Drag the divider (or focus it and press ←/→) to resiz
 split is remembered per worktree. Drag tabs to reorder them or onto the other
 pane's tab bar; → / ← moves the current tab across, ⊟ closes a pane (its tabs
 join the other), and a pane goes when its last tab does. **⌘⌥←/→** moves between
-panes and **⌘⇧↩** zooms the one you're in to the full width. Tabs don't survive a
-restart: quitting grove stops them.
+panes and **⌘⇧↩** zooms the one you're in to the full width. Quitting grove stops
+the tabs, and the next launch reopens the same worktrees with the same tabs:
+each Claude tab resumes its conversation (this needs the
+[Claude Code status](#claude-code-status) hooks), and shells start fresh.
 
 ## How it works
 

@@ -102,6 +102,7 @@ type WorkspaceInfo struct {
 	Claude   string `json:"claude"` // "working" | "waiting" | "idle" | ""
 	Git      string `json:"git"`    // "rebase" | "merge" while stopped mid-operation, else ""
 	Panes    []Pane `json:"panes"`
+	Restored bool   `json:"restored"` // reopened at launch: the frontend starts it from its saved layout
 }
 
 // Snapshot is everything the frontend renders.
@@ -131,6 +132,9 @@ func newApp(initial string, setup bool) *App {
 		a.init = repoInit(cfg.Path)
 	}
 	a.sess = newSessions(cfg.socketPath(), a.emit)
+	if err := a.sess.restore(cfg.tabsFile()); err != nil {
+		fmt.Fprintf(os.Stderr, "grove: restoring tabs: %v\n", err)
+	}
 	a.ws = cfg.resolve()
 	return a
 }
@@ -297,7 +301,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	if n == 0 {
 		return false
 	}
-	msg := fmt.Sprintf("%d worktree%s running. Quitting stops %s panes.", n, plural(n, " is", "s are"), plural(n, "its", "their"))
+	msg := quitMessage(n, a.sess.resumable())
 	choice, err := wr.MessageDialog(ctx, wr.MessageDialogOptions{
 		Type:          wr.QuestionDialog,
 		Title:         "Quit grove?",
@@ -309,7 +313,22 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	return err == nil && choice != "Quit"
 }
 
-func (a *App) shutdown(context.Context) { a.sess.closeAll() }
+// quitMessage is the quit confirmation for n open worktrees; resumes says some
+// Claude tab will resume its conversation next launch.
+func quitMessage(n int, resumes bool) string {
+	msg := fmt.Sprintf("%d worktree%s running. Quitting stops %s panes", n, plural(n, " is", "s are"), plural(n, "its", "their"))
+	if resumes {
+		msg += ", Claude conversations resume next launch"
+	}
+	return msg + "."
+}
+
+func (a *App) shutdown(context.Context) {
+	if err := a.sess.save(a.own.tabsFile()); err != nil {
+		fmt.Fprintf(os.Stderr, "grove: saving tabs: %v\n", err)
+	}
+	a.sess.closeAll()
+}
 
 func plural(n int, one, many string) string {
 	if n == 1 {
@@ -412,7 +431,7 @@ func (a *App) State() Snapshot {
 	for i, ws := range a.ws {
 		infos[i] = WorkspaceInfo{
 			Name: ws.Name, Branch: ws.Branch, Dir: ws.Dir, Repo: ws.RepoName, RepoPath: ws.RepoPath, Config: ws.Config,
-			Claude: claude[ws.Dir], Git: operation(ws.Dir), Panes: open[ws.Dir],
+			Claude: claude[ws.Dir], Git: operation(ws.Dir), Panes: open[ws.Dir], Restored: a.sess.wasRestored(ws.Dir),
 		}
 		_, infos[i].Open = open[ws.Dir]
 	}
